@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import pytest
 
-from win_timer_app.bitrix import Bitrix24Client, Bitrix24Error, looks_like_webhook
+from win_timer_app.bitrix import (
+    Bitrix24Client,
+    Bitrix24Error,
+    entity_url,
+    looks_like_webhook,
+)
 from win_timer_app.controller import AppController
 
 
@@ -65,10 +70,23 @@ def test_test_connection_returns_profile():
     assert ("profile", None) in fake.calls
 
 
-def test_test_connection_propagates_error():
+def test_test_connection_wraps_errors_as_bitrix_error():
     client, _ = _client(error=RuntimeError("boom"))
-    with pytest.raises(RuntimeError):
+    with pytest.raises(Bitrix24Error) as excinfo:
         client.test_connection()
+    assert "boom" in str(excinfo.value)
+
+
+def test_test_connection_strips_webhook_token_from_errors():
+    """A leaked token must never reach the caller (it's shown in the UI)."""
+    url = "https://acme.bitrix24.ru/rest/1/SUPERSECRET/"
+    fake = FakeBx(url, error=RuntimeError(f"403 Forbidden, url='{url}profile'"))
+    client = Bitrix24Client(url, client_factory=lambda u: fake)
+    with pytest.raises(Bitrix24Error) as excinfo:
+        client.test_connection()
+    message = str(excinfo.value)
+    assert "SUPERSECRET" not in message
+    assert "***" in message
 
 
 def test_real_client_constructs_in_worker_thread_without_event_loop():
@@ -111,3 +129,117 @@ def test_bitrix_webhook_persists_across_reload(storage):
     first.set_bitrix_webhook("https://acme.bitrix24.ru/rest/1/abc/")
     second = AppController(storage)
     assert second.bitrix_webhook() == "https://acme.bitrix24.ru/rest/1/abc/"
+
+
+# --- import: projects & tasks listing -----------------------------------------
+
+class RouteBx:
+    """Fake whose get_all() routes by (method, filter) to canned data."""
+
+    def __init__(self, router):
+        self.router = router
+        self.calls = []
+
+    def get_all(self, method, params=None):
+        self.calls.append((method, params or {}))
+        return self.router(method, params or {})
+
+
+def _routed(router):
+    return Bitrix24Client(
+        "https://acme.bitrix24.ru/rest/1/abc/", client_factory=lambda u: RouteBx(router)
+    )
+
+
+def test_current_user_id_from_profile():
+    client = _routed(lambda m, p: {"ID": "7", "NAME": "X"} if m == "profile" else [])
+    assert client.current_user_id() == 7
+
+
+def test_list_projects_merges_dedupes_and_excludes_final_stages():
+    def router(method, params):
+        if method == "crm.status.list":
+            return [
+                {"STATUS_ID": "DT150_16:SUCCESS", "ENTITY_ID": "DYNAMIC_150_STAGE_16", "SEMANTICS": "S"},
+                {"STATUS_ID": "DT150_16:FAIL", "ENTITY_ID": "DYNAMIC_150_STAGE_16", "SEMANTICS": "F"},
+                {"STATUS_ID": "DT150_16:UC_X", "ENTITY_ID": "DYNAMIC_150_STAGE_16", "SEMANTICS": None},
+                {"STATUS_ID": "C5:WON", "ENTITY_ID": "DEAL_STAGE", "SEMANTICS": "S"},  # other entity
+            ]
+        f = params.get("filter", {})
+        if "ufCrm16MainIspolnitel" in f:
+            return [
+                {"id": 1, "title": "A", "stageId": "DT150_16:UC_X"},     # active
+                {"id": 2, "title": "B", "stageId": "DT150_16:SUCCESS"},  # final -> excluded
+            ]
+        if "ufCrm16Supporters" in f:
+            return [
+                {"id": 1, "title": "A", "stageId": "DT150_16:UC_X"},     # dup
+                {"id": 3, "title": "C", "stageId": "DT150_16:NEW"},      # active
+            ]
+        return []
+
+    projects = _routed(router).list_projects(7)
+    assert sorted(p["id"] for p in projects) == ["1", "3"]
+    assert {p["title"] for p in projects} == {"A", "C"}
+
+
+def test_entity_url_for_project_points_to_smart_process_item():
+    url = entity_url("https://webmens.bitrix24.ru/rest/1/abc/", {"source": "project", "id": "5566"})
+    assert url == "https://webmens.bitrix24.ru/crm/type/150/details/5566/"
+
+
+def test_entity_url_for_task_uses_webhook_user_id():
+    url = entity_url("https://webmens.bitrix24.ru/rest/12/abc/", {"source": "task", "id": "9906"})
+    assert url == "https://webmens.bitrix24.ru/company/personal/user/12/tasks/task/view/9906/"
+
+
+def test_entity_url_none_for_missing_or_unknown():
+    assert entity_url("https://x.bitrix24.ru/rest/1/abc/", None) is None
+    assert entity_url("https://x.bitrix24.ru/rest/1/abc/", {"source": "x", "id": "1"}) is None
+    assert entity_url("https://x.bitrix24.ru/rest/1/abc/", {"source": "task"}) is None
+    assert entity_url("not-a-webhook", {"source": "task", "id": "1"}) is None
+
+
+def test_list_tasks_merges_dedupes_and_excludes_finished():
+    def router(method, params):
+        f = params.get("filter", {})
+        if f.get("RESPONSIBLE_ID"):
+            return [
+                {"id": "10", "title": "T1", "status": "3"},
+                {"id": "11", "title": "T2", "status": "5"},  # completed
+            ]
+        if f.get("ACCOMPLICE"):
+            return [
+                {"id": "10", "title": "T1", "status": "3"},  # dup
+                {"id": "12", "title": "T3", "status": "2"},
+            ]
+        return []
+
+    tasks = _routed(router).list_tasks(7)
+    assert sorted(t["id"] for t in tasks) == ["10", "12"]
+
+
+# --- controller: importing portal items as tasks ------------------------------
+
+def test_create_task_stores_and_persists_bitrix_link(storage):
+    controller = AppController(storage)
+    task = controller.create_task("P1", bitrix={"source": "project", "id": "5566"})
+    assert task.bitrix == {"source": "project", "id": "5566"}
+    reloaded = AppController(storage)
+    found = next(t for t in reloaded.all_tasks() if t.id == task.id)
+    assert found.bitrix == {"source": "project", "id": "5566"}
+
+
+def test_import_bitrix_items_creates_then_dedupes_same_day(controller):
+    items = [
+        {"source": "project", "id": "1", "title": "A"},
+        {"source": "task", "id": "9", "title": "B"},
+    ]
+    imported, skipped = controller.import_bitrix_items(items)
+    assert (imported, skipped) == (2, 0)
+
+    imported2, skipped2 = controller.import_bitrix_items(items)
+    assert (imported2, skipped2) == (0, 2)
+
+    titles = [t.title for t in controller.all_tasks()]
+    assert titles.count("A") == 1 and titles.count("B") == 1

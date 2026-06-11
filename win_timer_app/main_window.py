@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from PySide6.QtCore import QDateTime, QEvent, QThread, QTimer, Qt, Signal
-from PySide6.QtGui import QAction, QCloseEvent, QFont, QIcon
+from PySide6.QtCore import QDateTime, QEvent, QThread, QTimer, Qt, QUrl, Signal
+from PySide6.QtGui import QAction, QCloseEvent, QDesktopServices, QFont, QIcon
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPlainTextEdit,
+    QProgressBar,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -32,7 +33,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .bitrix import Bitrix24Client, looks_like_webhook
+from .bitrix import Bitrix24Client, entity_url, looks_like_webhook
 from .controller import AppController, format_day_label, format_duration
 from .models import Task, TaskStatus
 
@@ -475,6 +476,17 @@ class TaskRow(QFrame):
             controls.addWidget(complete_button)
 
         controls.addStretch(1)
+
+        portal_url = entity_url(controller.bitrix_webhook(), task.bitrix)
+        if portal_url:
+            open_button = QPushButton("Открыть в Б24")
+            open_button.setObjectName("ghostButton")
+            open_button.setToolTip("Открыть сущность в Битрикс24")
+            open_button.clicked.connect(
+                lambda checked=False, url=portal_url: QDesktopServices.openUrl(QUrl(url))
+            )
+            controls.addWidget(open_button)
+
         layout.addLayout(controls)
 
 
@@ -652,6 +664,177 @@ class FloatingTimer(QWidget):
         self.restore_requested.emit()
 
 
+class PortalImportDialog(QDialog):
+    """Pick projects (СПА 150) or tasks from the portal and import them."""
+
+    def __init__(self, controller: AppController, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.controller = controller
+        self.setWindowTitle("Импорт с портала Битрикс24")
+        self.resize(640, 540)
+        self._load_thread: _CallableThread | None = None
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(10)
+
+        self.status_label = QLabel("")
+        self.status_label.setWordWrap(True)
+        layout.addWidget(self.status_label)
+
+        # Loader shown while the portal lists are fetched.
+        self.loader = QWidget()
+        loader_layout = QVBoxLayout(self.loader)
+        loader_layout.addStretch(1)
+        self.loading_label = QLabel("Загрузка с портала…")
+        self.loading_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        loader_layout.addWidget(self.loading_label)
+        progress_row = QHBoxLayout()
+        progress_row.addStretch(1)
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 0)  # indeterminate (busy) indicator
+        self.progress.setTextVisible(False)
+        self.progress.setFixedWidth(240)
+        progress_row.addWidget(self.progress)
+        progress_row.addStretch(1)
+        loader_layout.addLayout(progress_row)
+        loader_layout.addStretch(1)
+        layout.addWidget(self.loader, 1)
+
+        self.tabs = QTabWidget()
+        self.project_list, project_tab = self._build_list_tab("Поиск проекта…")
+        self.task_list, task_tab = self._build_list_tab("Поиск задачи…")
+        self.tabs.addTab(project_tab, "Проекты")
+        self.tabs.addTab(task_tab, "Задачи")
+        self.tabs.hide()
+        layout.addWidget(self.tabs, 1)
+
+        buttons = QHBoxLayout()
+        buttons.addStretch(1)
+        close_button = QPushButton("Закрыть")
+        close_button.clicked.connect(self.reject)
+        buttons.addWidget(close_button)
+        self.import_button = QPushButton("Импортировать выбранное")
+        self.import_button.setObjectName("primaryButton")
+        self.import_button.setEnabled(False)
+        self.import_button.clicked.connect(self._do_import)
+        buttons.addWidget(self.import_button)
+        layout.addLayout(buttons)
+
+        self._start_load()
+
+    def _build_list_tab(self, placeholder: str):
+        tab = QWidget()
+        column = QVBoxLayout(tab)
+        column.setContentsMargins(0, 8, 0, 0)
+        column.setSpacing(8)
+        search = QLineEdit()
+        search.setPlaceholderText(placeholder)
+        list_widget = QListWidget()
+        list_widget.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
+        search.textChanged.connect(lambda text, lw=list_widget: self._filter_list(lw, text))
+        column.addWidget(search)
+        column.addWidget(list_widget, 1)
+        return list_widget, tab
+
+    def _filter_list(self, list_widget: QListWidget, text: str) -> None:
+        needle = text.strip().lower()
+        for index in range(list_widget.count()):
+            item = list_widget.item(index)
+            item.setHidden(needle not in item.text().lower())
+
+    def _show_loader(self, text: str, busy: bool = True) -> None:
+        self.loading_label.setText(text)
+        self.loading_label.setStyleSheet(
+            f"color: {'#5f6b7c' if busy else '#9b3c3c'}; background: transparent;"
+        )
+        self.progress.setVisible(busy)
+        self.tabs.hide()
+        self.loader.show()
+
+    def _show_content(self) -> None:
+        self.loader.hide()
+        self.tabs.show()
+
+    def _start_load(self) -> None:
+        webhook = self.controller.bitrix_webhook()
+        if not looks_like_webhook(webhook):
+            self._show_loader("Сначала укажите URL вебхука в Настройках.", busy=False)
+            return
+        self._show_loader("Загрузка с портала…", busy=True)
+
+        def work():
+            client = Bitrix24Client(webhook)
+            user_id = client.current_user_id()
+            return {
+                "projects": client.list_projects(user_id),
+                "tasks": client.list_tasks(user_id),
+            }
+
+        self._load_thread = _CallableThread(work, self)
+        self._load_thread.succeeded.connect(self._on_loaded)
+        self._load_thread.failed.connect(self._on_failed)
+        self._load_thread.start()
+
+    def _on_failed(self, message: str) -> None:
+        self._show_loader(f"Не удалось загрузить: {message}", busy=False)
+
+    def _on_loaded(self, data: object) -> None:
+        data = data if isinstance(data, dict) else {}
+        projects = data.get("projects", [])
+        tasks = data.get("tasks", [])
+        self._fill(self.project_list, projects, "project")
+        self._fill(self.task_list, tasks, "task")
+        self._set_status(
+            f"Проектов: {len(projects)} · Задач: {len(tasks)}. "
+            "Выбери нужные (можно несколько) и нажми «Импортировать выбранное».",
+            ok=True,
+        )
+        self.import_button.setEnabled(True)
+        self._show_content()
+
+    def _fill(self, list_widget: QListWidget, items: list, source: str) -> None:
+        list_widget.clear()
+        for entry in items:
+            title = entry.get("title") or f"#{entry.get('id')}"
+            item = QListWidgetItem(title)
+            item.setData(
+                Qt.ItemDataRole.UserRole,
+                {"source": source, "id": str(entry.get("id")), "title": entry.get("title", "")},
+            )
+            list_widget.addItem(item)
+
+    def _do_import(self) -> None:
+        chosen = [
+            item.data(Qt.ItemDataRole.UserRole)
+            for list_widget in (self.project_list, self.task_list)
+            for item in list_widget.selectedItems()
+        ]
+        if not chosen:
+            self._set_status("Ничего не выбрано.", ok=False)
+            return
+        self.imported_count, _ = self.controller.import_bitrix_items(chosen)
+        self.accept()
+
+    def _set_status(self, text: str, ok: bool | None) -> None:
+        color = {True: "#2d6b40", False: "#9b3c3c", None: "#5f6b7c"}[ok]
+        self.status_label.setText(text)
+        self.status_label.setStyleSheet(f"color: {color}; background: transparent;")
+
+    def _await_thread(self) -> None:
+        thread = self._load_thread
+        if thread is not None and thread.isRunning():
+            thread.wait(8000)
+
+    def accept(self) -> None:
+        self._await_thread()
+        super().accept()
+
+    def reject(self) -> None:
+        self._await_thread()
+        super().reject()
+
+
 class MainWindow(QMainWindow):
     focus_presets = (5, 10, 20, 30, 40)
 
@@ -725,6 +908,10 @@ class MainWindow(QMainWindow):
         section_title.setObjectName("sectionTitle")
         top_actions.addWidget(section_title)
         top_actions.addStretch(1)
+
+        portal_button = QPushButton("Выбрать с портала")
+        portal_button.clicked.connect(self._open_portal_import)
+        top_actions.addWidget(portal_button)
 
         add_button = QPushButton("Новая задача")
         add_button.setObjectName("primaryButton")
@@ -1183,6 +1370,11 @@ class MainWindow(QMainWindow):
 
     def _open_create_dialog(self) -> None:
         self.create_dialog.open_clean()
+
+    def _open_portal_import(self) -> None:
+        dialog = PortalImportDialog(self.controller, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.refresh_ui()
 
     def _create_task(self, title: str, description: str, start_now: bool) -> None:
         self.controller.create_task(title, description, start_now=start_now)

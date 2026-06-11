@@ -147,19 +147,59 @@ class AppController:
                 return task
         raise KeyError(task_id)
 
-    def create_task(self, title: str, description: str = "", start_now: bool = False) -> Task:
+    def create_task(
+        self,
+        title: str,
+        description: str = "",
+        start_now: bool = False,
+        bitrix: dict | None = None,
+    ) -> Task:
         task = Task(
             id=make_id(),
             day=self.today_str(),
             title=title.strip(),
             description=description.strip(),
             status=TaskStatus.OPEN,
+            bitrix=bitrix,
         )
         self.state.tasks.append(task)
         self.save()
         if start_now:
             self.start_task(task.id)
         return task
+
+    def import_bitrix_items(self, items: list[dict]) -> tuple[int, int]:
+        """Create tasks from imported portal items, skipping same-day duplicates.
+
+        Each item is ``{"source", "id", "title"}``. Returns ``(imported, skipped)``.
+        Re-importing the same item on a later day is allowed (new day's plan).
+        """
+        today = self.today_str()
+        imported = skipped = 0
+        for item in items:
+            source = item.get("source")
+            item_id = str(item.get("id"))
+            if self._bitrix_task_exists(today, source, item_id):
+                skipped += 1
+                continue
+            self.create_task(
+                item.get("title", ""),
+                bitrix={"source": source, "id": item_id},
+            )
+            imported += 1
+        return imported, skipped
+
+    def _bitrix_task_exists(self, day: str, source, item_id: str) -> bool:
+        for task in self.state.tasks:
+            link = task.bitrix
+            if (
+                task.day == day
+                and isinstance(link, dict)
+                and link.get("source") == source
+                and str(link.get("id")) == item_id
+            ):
+                return True
+        return False
 
     def active_task(self) -> Task | None:
         for task in self.state.tasks:

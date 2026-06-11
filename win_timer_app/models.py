@@ -63,6 +63,7 @@ class Task:
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
     completed_at: str | None = None
     continuation_of: str | None = None
+    bitrix: dict[str, Any] | None = None
 
     def total_seconds(self, now: datetime | None = None) -> int:
         return sum(session.duration_seconds(now=now) for session in self.sessions)
@@ -87,6 +88,7 @@ class Task:
             "created_at": self.created_at,
             "completed_at": self.completed_at,
             "continuation_of": self.continuation_of,
+            "bitrix": self.bitrix,
         }
 
     @classmethod
@@ -101,4 +103,5 @@ class Task:
             created_at=data.get("created_at", datetime.now().isoformat()),
             completed_at=data.get("completed_at"),
             continuation_of=data.get("continuation_of"),
+            bitrix=data.get("bitrix"),
         )

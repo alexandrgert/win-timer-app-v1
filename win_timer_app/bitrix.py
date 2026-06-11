@@ -22,6 +22,33 @@ class Bitrix24Error(Exception):
     """Raised for configuration problems with the Bitrix24 client."""
 
 
+# Smart-process (СПА) "Реестр проектов".
+PROJECTS_ENTITY_TYPE_ID = 150
+
+
+def entity_url(webhook_url: str, link: dict | None) -> str | None:
+    """Build the portal URL for an imported entity from the webhook + link.
+
+    ``link`` is the task's stored ``{"source", "id"}``. Returns ``None`` if the
+    URL can't be built. The host and user id come from the webhook itself.
+    """
+    if not isinstance(link, dict):
+        return None
+    match = re.match(r"(https://[^/\s]+)/rest/(\d+)/", (webhook_url or "").strip())
+    if not match:
+        return None
+    base, user_id = match.group(1), match.group(2)
+    item_id = link.get("id")
+    if not item_id:
+        return None
+    source = link.get("source")
+    if source == "project":
+        return f"{base}/crm/type/{PROJECTS_ENTITY_TYPE_ID}/details/{item_id}/"
+    if source == "task":
+        return f"{base}/company/personal/user/{user_id}/tasks/task/view/{item_id}/"
+    return None
+
+
 def _ensure_event_loop() -> None:
     """Make sure the current thread has a usable asyncio event loop.
 
@@ -59,15 +86,103 @@ class Bitrix24Client:
             self._bx = self._factory(self._webhook_url)
         return self._bx
 
-    def test_connection(self) -> dict:
-        """Call ``profile`` and return the current user's profile dict.
+    def _sanitize(self, text: str) -> str:
+        """Strip the webhook URL/token from a message so it never leaks.
 
-        Uses ``get_all`` because fast-bitrix24's ``call`` requires a non-empty
-        item list; ``profile`` takes no parameters. ``get_all`` works for this
-        single-object method and returns the profile dict, but warns that it is
-        meant for list methods — we silence that one expected warning. Raises
-        whatever the underlying client raises on failure.
+        fast-bitrix24 / aiohttp errors embed the full request URL, which
+        contains the secret token — and that message is shown in the UI.
         """
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", category=UserWarning, message="get_all")
-            return self._client().get_all("profile")
+        text = str(text)
+        text = text.replace(self._webhook_url, "***")
+        match = re.search(r"/rest/\d+/([^/]+)", self._webhook_url)
+        if match:
+            text = text.replace(match.group(1), "***")
+        return text
+
+    def _safe_get_all(self, method: str, params: dict | None = None):
+        """Call ``get_all`` with the token stripped from any error.
+
+        ``profile`` and other single-object methods warn that ``get_all`` is
+        meant for list methods — we silence that one expected warning.
+        """
+        try:
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", category=UserWarning, message="get_all")
+                return self._client().get_all(method, params)
+        except Bitrix24Error:
+            raise
+        except Exception as exc:
+            raise Bitrix24Error(self._sanitize(str(exc))) from None
+
+    def _profile(self) -> dict:
+        return self._safe_get_all("profile")
+
+    def test_connection(self) -> dict:
+        """Call ``profile`` and return the current user's profile dict."""
+        return self._profile()
+
+    def current_user_id(self) -> int:
+        """Return the id of the webhook's user (from ``profile``)."""
+        return int(self._profile().get("ID"))
+
+    def _final_project_stage_ids(self) -> set:
+        """Stage ids of СПА 150 that are final (won/lost), by stage semantics.
+
+        Mirrors the portal's "В работе" view: active = any stage whose
+        ``SEMANTICS`` is not ``'S'`` (success) or ``'F'`` (fail).
+        """
+        prefix = f"DYNAMIC_{PROJECTS_ENTITY_TYPE_ID}_STAGE_"
+        statuses = self._safe_get_all(
+            "crm.status.list", {"select": ["STATUS_ID", "ENTITY_ID", "SEMANTICS"]}
+        ) or []
+        return {
+            status.get("STATUS_ID")
+            for status in statuses
+            if str(status.get("ENTITY_ID", "")).startswith(prefix)
+            and status.get("SEMANTICS") in ("S", "F")
+        }
+
+    def list_projects(self, user_id) -> list[dict]:
+        """Active projects (СПА 150) where the user is main executor or supporter.
+
+        Bitrix filters can't OR across fields, so we query each field and merge.
+        "Active" means the project's stage is not final (won/lost) — matching the
+        portal's "В работе" filter — rather than the unrelated "Проект сдан" flag.
+        """
+        final_stages = self._final_project_stage_ids()
+        found: dict[str, str] = {}
+        for field in ("ufCrm16MainIspolnitel", "ufCrm16Supporters"):
+            items = self._safe_get_all(
+                "crm.item.list",
+                {
+                    "entityTypeId": PROJECTS_ENTITY_TYPE_ID,
+                    "filter": {field: user_id},
+                    "select": ["id", "title", "stageId"],
+                },
+            ) or []
+            for item in items:
+                if item.get("stageId") in final_stages:
+                    continue
+                found[str(item.get("id"))] = item.get("title", "")
+        return [{"id": key, "title": title} for key, title in found.items()]
+
+    def list_tasks(self, user_id) -> list[dict]:
+        """Active tasks where the user is responsible or an accomplice.
+
+        Results come back lower-cased (``id``/``title``/``status``); status
+        ``'5'`` (done) / ``'7'`` (declined) are excluded.
+        """
+        found: dict[str, str] = {}
+        for field in ("RESPONSIBLE_ID", "ACCOMPLICE"):
+            items = self._safe_get_all(
+                "tasks.task.list",
+                {
+                    "filter": {field: user_id, "!STATUS": "5"},
+                    "select": ["ID", "TITLE", "STATUS"],
+                },
+            ) or []
+            for item in items:
+                if str(item.get("status", "")) in ("5", "7"):
+                    continue
+                found[str(item.get("id"))] = item.get("title", "")
+        return [{"id": key, "title": title} for key, title in found.items()]
