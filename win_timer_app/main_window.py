@@ -5,7 +5,9 @@ from datetime import datetime
 from PySide6.QtCore import (
     QDate,
     QDateTime,
+    QEasingCurve,
     QEvent,
+    QPropertyAnimation,
     QStringListModel,
     QThread,
     QTimer,
@@ -16,7 +18,6 @@ from PySide6.QtCore import (
 from PySide6.QtGui import (
     QAction,
     QCloseEvent,
-    QColor,
     QDesktopServices,
     QFont,
     QFontDatabase,
@@ -33,7 +34,7 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QFormLayout,
     QFrame,
-    QGraphicsDropShadowEffect,
+    QGraphicsOpacityEffect,
     QHBoxLayout,
     QHeaderView,
     QInputDialog,
@@ -316,6 +317,68 @@ def _style_calendar_field(widget) -> None:
         }}
         """
     )
+
+
+_ICON_CACHE: dict[str, QIcon] = {}
+
+
+def _line_icon(key: str, draw, color: str = "#828B9A") -> QIcon:
+    """Build (and cache) a crisp line-art QIcon drawn by ``draw(painter)``."""
+    cache_key = f"{key}:{color}"
+    if cache_key in _ICON_CACHE:
+        return _ICON_CACHE[cache_key]
+
+    from PySide6.QtGui import QColor, QPainter, QPen, QPixmap
+
+    scale = 4
+    pixmap = QPixmap(16 * scale, 16 * scale)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.scale(scale, scale)
+    pen = QPen(QColor(color))
+    pen.setWidthF(1.3)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+    painter.setPen(pen)
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+    draw(painter)
+    painter.end()
+
+    icon = QIcon(pixmap)
+    _ICON_CACHE[cache_key] = icon
+    return icon
+
+
+def _draw_trash(painter) -> None:
+    from PySide6.QtCore import QPointF
+    from PySide6.QtGui import QPainterPath
+
+    painter.drawLine(QPointF(3, 4.6), QPointF(13, 4.6))  # lid line
+    handle = QPainterPath()  # lid handle
+    handle.moveTo(6, 4.6)
+    handle.lineTo(6, 3.3)
+    handle.quadTo(6, 2.7, 6.6, 2.7)
+    handle.lineTo(9.4, 2.7)
+    handle.quadTo(10, 2.7, 10, 3.3)
+    handle.lineTo(10, 4.6)
+    painter.drawPath(handle)
+    body = QPainterPath()  # tapered bin
+    body.moveTo(4.4, 4.6)
+    body.lineTo(5.1, 13.2)
+    body.lineTo(10.9, 13.2)
+    body.lineTo(11.6, 4.6)
+    painter.drawPath(body)
+
+
+def _draw_stopwatch(painter) -> None:
+    from PySide6.QtCore import QPointF, QRectF
+
+    painter.drawEllipse(QRectF(3, 4.7, 10, 10))  # dial
+    painter.drawLine(QPointF(8, 9.7), QPointF(8, 6.8))  # minute hand
+    painter.drawLine(QPointF(8, 9.7), QPointF(10.1, 10.5))  # hour hand
+    painter.drawLine(QPointF(8, 2.3), QPointF(8, 3.9))  # crown stem
+    painter.drawLine(QPointF(6, 2.3), QPointF(10, 2.3))  # crown bar
 
 
 class _CallableThread(QThread):
@@ -760,7 +823,7 @@ class TaskRow(QFrame):
         self._name_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         layout.addWidget(self._name_label, 1)
 
-        # ── inline time block: «сег.» / «всего» ──────────────
+        # ── inline time block: «сег.» only ───────────────────
         reference = reference_date or controller.today_str()
         is_today = reference == controller.today_str()
         times = QHBoxLayout()
@@ -772,30 +835,27 @@ class TaskRow(QFrame):
         today_value.setObjectName("rowTimeVal")
         today_value.setProperty("live", self._is_running)
         times.addWidget(today_value)
-        sep = QLabel("·")
-        sep.setObjectName("rowTimeSep")
-        times.addWidget(sep)
-        total_label = QLabel("всего")
-        total_label.setObjectName("rowTimeLbl")
-        times.addWidget(total_label)
-        total_value = QLabel(format_hm(task.total_seconds(datetime.now())))
-        total_value.setObjectName("rowTimeVal")
-        times.addWidget(total_value)
         layout.addLayout(times)
 
-        # ── actions (revealed on hover; always on for running) ─
+        # ── actions: left fade + buttons, revealed on hover ───
         self._actions = QWidget()
         self._actions.setObjectName("rowActions")
         actions = QHBoxLayout(self._actions)
         actions.setContentsMargins(0, 0, 0, 0)
         actions.setSpacing(4)
 
+        fade = QFrame()
+        fade.setObjectName("rowActionsFade")
+        fade.setFixedWidth(26)
+        actions.addWidget(fade)
+
         is_done = task.status == TaskStatus.COMPLETED
 
         if not is_done:
-            history_button = QPushButton("↺")
+            history_button = QPushButton()
             history_button.setObjectName("iconAction")
             history_button.setFixedSize(26, 26)
+            history_button.setIcon(_line_icon("stopwatch", _draw_stopwatch))
             history_button.setToolTip("История сессий")
             history_button.setCursor(Qt.CursorShape.PointingHandCursor)
             history_button.clicked.connect(lambda: self.history_requested.emit(task.id))
@@ -828,28 +888,28 @@ class TaskRow(QFrame):
         delete_button = QPushButton()
         delete_button.setObjectName("iconActionDanger")
         delete_button.setFixedSize(26, 26)
-        delete_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_TrashIcon))
+        delete_button.setIcon(_line_icon("trash", _draw_trash))
         delete_button.setToolTip("Удалить задачу")
         delete_button.setCursor(Qt.CursorShape.PointingHandCursor)
         delete_button.clicked.connect(lambda: self.delete_requested.emit(task.id))
         actions.addWidget(delete_button)
 
         if is_done:
-            resume_button = QPushButton("▶ Возобновить")
+            resume_button = QPushButton("Возобновить")
             resume_button.setObjectName("rowResume")
             resume_button.setFixedHeight(26)
             resume_button.setCursor(Qt.CursorShape.PointingHandCursor)
             resume_button.clicked.connect(lambda: self.resume_requested.emit(task.id))
             actions.addWidget(resume_button)
         elif self._is_running:
-            stop_button = QPushButton("⏸ Стоп")
+            stop_button = QPushButton("Стоп")
             stop_button.setObjectName("rowStop")
             stop_button.setFixedHeight(26)
             stop_button.setCursor(Qt.CursorShape.PointingHandCursor)
             stop_button.clicked.connect(lambda: self.stop_requested.emit(task.id))
             actions.addWidget(stop_button)
         else:
-            start_button = QPushButton("▶ Старт")
+            start_button = QPushButton("Старт")
             start_button.setObjectName("rowStart")
             start_button.setFixedHeight(26)
             start_button.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -858,16 +918,35 @@ class TaskRow(QFrame):
 
         layout.addWidget(self._actions)
 
-        # Running rows keep their actions visible; the rest reveal on hover.
-        self._actions.setVisible(self._is_running)
+        # Smooth fade-in: actions keep their layout space (no reflow jump);
+        # opacity is animated and interaction disabled while hidden.
+        self._fade_effect = QGraphicsOpacityEffect(self._actions)
+        self._fade_effect.setOpacity(1.0 if self._is_running else 0.0)
+        self._actions.setGraphicsEffect(self._fade_effect)
+        self._actions.setEnabled(self._is_running)
+        self._fade_anim = QPropertyAnimation(self._fade_effect, b"opacity", self)
+        self._fade_anim.setDuration(150)
+        self._fade_anim.setEasingCurve(QEasingCurve.Type.InOutQuad)
+        self._fade_anim.finished.connect(self._on_fade_finished)
+
+    def _animate_actions(self, target: float) -> None:
+        self._fade_anim.stop()
+        self._fade_anim.setStartValue(self._fade_effect.opacity())
+        self._fade_anim.setEndValue(target)
+        self._fade_anim.start()
+
+    def _on_fade_finished(self) -> None:
+        if self._fade_effect.opacity() <= 0.01:
+            self._actions.setEnabled(False)
 
     def enterEvent(self, event) -> None:
-        self._actions.setVisible(True)
+        self._actions.setEnabled(True)
+        self._animate_actions(1.0)
         super().enterEvent(event)
 
     def leaveEvent(self, event) -> None:
         if not self._is_running:
-            self._actions.setVisible(False)
+            self._animate_actions(0.0)
         super().leaveEvent(event)
 
     def resizeEvent(self, event) -> None:
@@ -1612,7 +1691,11 @@ class MainWindow(QMainWindow):
             }
             QPushButton:hover { background: #ECEEF3; }
             QPushButton:disabled { color: #B8BDC9; }
-            QPushButton#primaryButton, QPushButton#btnAccent {
+            QPushButton#primaryButton {
+                background: #3B83F6; border: none; color: #FFFFFF; font-weight: 500;
+                padding: 8px 20px;
+            }
+            QPushButton#btnAccent {
                 background: #3B83F6; border: none; color: #FFFFFF; font-weight: 500;
                 padding: 0 16px;
             }
@@ -1688,6 +1771,11 @@ class MainWindow(QMainWindow):
             QLabel#rowTimeVal[live="true"] { color: #27AE60; }
 
             QWidget#rowActions { background: transparent; }
+            QFrame#rowActionsFade {
+                border: none;
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 rgba(255,255,255,0), stop:1 rgba(255,255,255,255));
+            }
             QPushButton#iconAction, QPushButton#iconActionDanger {
                 background: transparent; border: none; border-radius: 7px;
                 color: #B8BDC9; font-size: 14px; padding: 0;
@@ -1705,10 +1793,10 @@ class MainWindow(QMainWindow):
             }
             QPushButton#rowStart:hover { background: #22994F; }
             QPushButton#rowStop {
-                background: #F5F6FA; border: 1px solid #D0D2D8; border-radius: 7px;
-                color: #828B9A; font-size: 11px; font-weight: 500; padding: 0 11px;
+                background: #FDE8E8; border: 1px solid rgba(224,83,83,0.25); border-radius: 7px;
+                color: #E05353; font-size: 11px; font-weight: 500; padding: 0 11px;
             }
-            QPushButton#rowStop:hover { background: #F2F3F7; color: #252835; }
+            QPushButton#rowStop:hover { background: #FBD9D9; }
             QPushButton#rowResume {
                 background: #E8F0FD; border: none; border-radius: 7px;
                 color: #3B83F6; font-size: 11px; font-weight: 500; padding: 0 11px;
@@ -1837,6 +1925,9 @@ class MainWindow(QMainWindow):
         else:
             tasks = self.controller.tasks_all()
 
+        # Completed tasks sink to the bottom (stable: keeps prior order otherwise).
+        tasks = sorted(tasks, key=lambda t: t.status == TaskStatus.COMPLETED)
+
         if not tasks:
             hint = QLabel(self._empty_hint())
             hint.setObjectName("descriptionLabel")
@@ -1852,19 +1943,9 @@ class MainWindow(QMainWindow):
                 row.history_requested.connect(self._open_history)
                 row.delete_requested.connect(self._confirm_delete_task)
                 row.plan_toggle_requested.connect(self._toggle_plan)
-                self._apply_card_shadow(row)
                 self.days_layout.addWidget(row)
         self.days_layout.addStretch(1)
         self._refresh_active_panel()
-
-    def _apply_card_shadow(self, widget: QWidget) -> None:
-        """Soft drop shadow for cards (QSS has no box-shadow)."""
-        effect = QGraphicsDropShadowEffect(widget)
-        effect.setBlurRadius(12)
-        effect.setXOffset(0)
-        effect.setYOffset(2)
-        effect.setColor(QColor(0, 0, 0, 26))
-        widget.setGraphicsEffect(effect)
 
     def _empty_hint(self) -> str:
         if self._current_view == "plan":
@@ -2290,6 +2371,17 @@ class MainWindow(QMainWindow):
         super().changeEvent(event)
         if event.type() == QEvent.Type.WindowStateChange and self.isMinimized():
             QTimer.singleShot(0, self._hide_to_tray)
+
+    def bind_single_instance_server(self, server) -> None:
+        """Surface this window when a second launch pings the local server."""
+        self._instance_server = server
+        server.newConnection.connect(self._on_second_instance)
+
+    def _on_second_instance(self) -> None:
+        connection = self._instance_server.nextPendingConnection()
+        if connection is not None:
+            connection.disconnected.connect(connection.deleteLater)
+        self._restore_from_tray()
 
     def _restore_from_tray(self) -> None:
         self.floating.hide()
