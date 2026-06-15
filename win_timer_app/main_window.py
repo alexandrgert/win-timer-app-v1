@@ -296,19 +296,22 @@ def _style_calendar_field(widget) -> None:
     widget.setStyleSheet(
         f"""
         #{name} {{
-            background: white;
-            border: 1px solid rgba(20, 22, 27, 0.12);
-            border-radius: 12px;
-            padding: 6px 10px;
+            background: #FFFFFF;
+            border: 1px solid #D0D2D8;
+            border-radius: 10px;
+            padding: 7px 11px;
+            color: #252835;
+            selection-background-color: #3B83F6;
         }}
+        #{name}:focus {{ border-color: #3B83F6; }}
         #{name}::drop-down {{
             subcontrol-origin: padding;
             subcontrol-position: center right;
             width: 30px;
             border: none;
             background: transparent;
-            border-top-right-radius: 12px;
-            border-bottom-right-radius: 12px;
+            border-top-right-radius: 10px;
+            border-bottom-right-radius: 10px;
         }}
         #{name}::down-arrow {{
             image: url("{icon}");
@@ -317,6 +320,39 @@ def _style_calendar_field(widget) -> None:
         }}
         """
     )
+
+
+_CHECK_ICON_PATH: str | None = None
+
+
+def _check_icon_path() -> str:
+    """Draw a white checkmark PNG once (for the QCheckBox checked indicator)."""
+    global _CHECK_ICON_PATH
+    if _CHECK_ICON_PATH:
+        return _CHECK_ICON_PATH
+    import os
+    import tempfile
+
+    from PySide6.QtCore import QPointF
+    from PySide6.QtGui import QColor, QPainter, QPen, QPixmap
+
+    path = os.path.join(tempfile.gettempdir(), "tasktimer_check.png")
+    scale = 4
+    pixmap = QPixmap(16 * scale, 16 * scale)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.scale(scale, scale)
+    pen = QPen(QColor("#FFFFFF"))
+    pen.setWidthF(2.0)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+    painter.setPen(pen)
+    painter.drawPolyline([QPointF(4, 8.4), QPointF(7, 11.2), QPointF(12, 5)])
+    painter.end()
+    pixmap.save(path, "PNG")
+    _CHECK_ICON_PATH = path
+    return path
 
 
 _ICON_CACHE: dict[str, QIcon] = {}
@@ -514,26 +550,38 @@ class SessionEditDialog(QDialog):
         self.controller = controller
         self.task = task
         self.selected_session_id: str | None = None
-        self.setWindowTitle(f"История: {task.title}")
-        self.resize(620, 420)
+        self.setWindowTitle("История сессий")
+        self.resize(660, 480)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(18, 18, 18, 18)
-        layout.setSpacing(14)
+        layout.setContentsMargins(24, 22, 24, 22)
+        layout.setSpacing(12)
 
-        select_all_row = QHBoxLayout()
+        title = QLabel("История сессий")
+        title.setObjectName("sectionTitle")
+        layout.addWidget(title)
+        subtitle = QLabel(task.title)
+        subtitle.setObjectName("descriptionLabel")
+        subtitle.setWordWrap(True)
+        layout.addWidget(subtitle)
+        layout.addSpacing(4)
+
         self.select_all_checkbox = QCheckBox("Выделить всё")
+        self.select_all_checkbox.setCursor(Qt.CursorShape.PointingHandCursor)
         self.select_all_checkbox.toggled.connect(self._toggle_select_all)
-        select_all_row.addWidget(self.select_all_checkbox)
-        select_all_row.addStretch(1)
-        layout.addLayout(select_all_row)
+        layout.addWidget(self.select_all_checkbox)
 
         self.table = QTableWidget(0, 5)
         self.table.setHorizontalHeaderLabels(["", "Начало", "Окончание", "Длительность", "Передано"])
         self.table.verticalHeader().setVisible(False)
+        self.table.verticalHeader().setDefaultSectionSize(36)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setShowGrid(False)
+        self.table.setAlternatingRowColors(True)
+        self.table.setFrameShape(QFrame.Shape.NoFrame)
+        self.table.horizontalHeader().setHighlightSections(False)
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
@@ -541,13 +589,17 @@ class SessionEditDialog(QDialog):
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
         self.table.itemSelectionChanged.connect(self._load_current_session)
-        layout.addWidget(self.table)
+        layout.addWidget(self.table, 1)
 
         form = QFormLayout()
+        form.setHorizontalSpacing(14)
+        form.setVerticalSpacing(8)
+        form.setContentsMargins(0, 6, 0, 0)
         self.start_edit = QDateTimeEdit()
         self.start_edit.setObjectName("historyStart")
         self.start_edit.setDisplayFormat("dd.MM.yyyy HH:mm:ss")
         self.start_edit.setCalendarPopup(True)
+        self.start_edit.setFixedHeight(34)
         _style_calendar_field(self.start_edit)
         form.addRow("Начало", self.start_edit)
 
@@ -555,21 +607,30 @@ class SessionEditDialog(QDialog):
         self.end_edit.setObjectName("historyEnd")
         self.end_edit.setDisplayFormat("dd.MM.yyyy HH:mm:ss")
         self.end_edit.setCalendarPopup(True)
+        self.end_edit.setFixedHeight(34)
         _style_calendar_field(self.end_edit)
         form.addRow("Окончание", self.end_edit)
         layout.addLayout(form)
+        layout.addSpacing(4)
 
         actions = QHBoxLayout()
+        actions.setSpacing(8)
         add_button = QPushButton("Добавить запись")
         add_button.setObjectName("ghostButton")
+        add_button.setFixedHeight(34)
+        add_button.setCursor(Qt.CursorShape.PointingHandCursor)
         add_button.clicked.connect(self._add_session)
         actions.addWidget(add_button)
         self.delete_session_button = QPushButton("Удалить запись")
         self.delete_session_button.setObjectName("deleteGhostButton")
+        self.delete_session_button.setFixedHeight(34)
+        self.delete_session_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.delete_session_button.clicked.connect(self._delete_current_session)
         actions.addWidget(self.delete_session_button)
         self.transfer_button = QPushButton("Передать в Битрикс")
         self.transfer_button.setObjectName("ghostButton")
+        self.transfer_button.setFixedHeight(34)
+        self.transfer_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.transfer_button.clicked.connect(self._transfer_to_bitrix)
         link = self.task.bitrix
         self.transfer_button.setEnabled(
@@ -579,6 +640,8 @@ class SessionEditDialog(QDialog):
         actions.addStretch()
         save_button = QPushButton("Сохранить интервал")
         save_button.setObjectName("primaryButton")
+        save_button.setFixedHeight(34)
+        save_button.setCursor(Qt.CursorShape.PointingHandCursor)
         save_button.clicked.connect(self._save_current_session)
         actions.addWidget(save_button)
         layout.addLayout(actions)
@@ -1348,8 +1411,14 @@ class MainWindow(QMainWindow):
                     return family
             return candidates[-1]
 
-        self._sans_family = pick("Inter", "Segoe UI", "Helvetica Neue", "Arial")
-        self._mono_family = pick("Roboto Mono", "Consolas", "Cascadia Mono", "Courier New")
+        # Inter / Roboto Mono are bundled (assets/fonts), so they are the primary
+        # choice on every OS; the fallbacks cover Windows and macOS system fonts.
+        self._sans_family = pick(
+            "Inter", "Segoe UI", "SF Pro Text", "Helvetica Neue", "Arial"
+        )
+        self._mono_family = pick(
+            "Roboto Mono", "SF Mono", "Menlo", "Consolas", "Cascadia Mono", "Courier New"
+        )
         app_font = QFont(self._sans_family, 10)
         app_font.setStyleStrategy(QFont.StyleStrategy.PreferAntialias)
         self.app.setFont(app_font)
@@ -1875,9 +1944,55 @@ class MainWindow(QMainWindow):
 
             /* ── Dialogs ──────────────────────────────────── */
             QDialog { background: #FFFFFF; }
-            QLabel#sectionTitle { color: #252835; font-size: 14px; font-weight: 500; }
+            QLabel#sectionTitle { color: #252835; font-size: 15px; font-weight: 500; }
             QLabel#descriptionLabel { color: #828B9A; font-size: 12px; }
-            QCheckBox { color: #252835; spacing: 6px; }
+
+            /* Checkboxes */
+            QCheckBox { color: #252835; spacing: 8px; }
+            QCheckBox::indicator {
+                width: 16px; height: 16px; border-radius: 4px;
+                border: 1px solid #D0D2D8; background: #FFFFFF;
+            }
+            QCheckBox::indicator:hover { border-color: #3B83F6; }
+            QCheckBox::indicator:checked {
+                background: #3B83F6; border-color: #3B83F6; image: url("__CHECK__");
+            }
+
+            /* Tables (history) */
+            QTableWidget, QTableView {
+                background: #FFFFFF; border: 1px solid #DCDEE3; border-radius: 10px;
+                alternate-background-color: #FAFBFC; outline: none;
+                selection-background-color: #E8F0FD; selection-color: #252835;
+            }
+            QTableView::item { padding: 4px 8px; border: none; }
+            QTableView::item:selected { background: #E8F0FD; color: #252835; }
+            QTableView::indicator {
+                width: 16px; height: 16px; border-radius: 4px;
+                border: 1px solid #D0D2D8; background: #FFFFFF;
+            }
+            QTableView::indicator:hover { border-color: #3B83F6; }
+            QTableView::indicator:checked {
+                background: #3B83F6; border-color: #3B83F6; image: url("__CHECK__");
+            }
+            QHeaderView { background: transparent; }
+            QHeaderView::section {
+                background: #F5F6FA; color: #828B9A; padding: 8px 8px;
+                border: none; border-bottom: 1px solid #DCDEE3;
+                font-size: 11px; font-weight: 500;
+            }
+            QHeaderView::section:first { border-top-left-radius: 10px; }
+            QHeaderView::section:last { border-top-right-radius: 10px; }
+            QTableCornerButton::section { background: #F5F6FA; border: none; }
+
+            /* Destructive ghost button (Удалить запись) */
+            QPushButton#deleteGhostButton {
+                background: transparent; border: 1px solid rgba(224,83,83,0.30);
+                border-radius: 8px; padding: 0 14px; color: #E05353; font-weight: 400;
+            }
+            QPushButton#deleteGhostButton:hover { background: #FDE8E8; }
+            QPushButton#deleteGhostButton:disabled { color: #E0A8A8; border-color: #F1D6D6; }
+            QPushButton#ghostButton:disabled { color: #C8CCD4; border-color: #E4E6EC; }
+
             QTabWidget::pane { border: 1px solid #DCDEE3; border-radius: 10px; top: -1px; }
             QTabBar::tab {
                 background: #F5F6FA; color: #828B9A; padding: 7px 16px;
@@ -1890,7 +2005,11 @@ class MainWindow(QMainWindow):
             }
             QProgressBar::chunk { background: #3B83F6; border-radius: 3px; }
         """
-        qss = qss.replace("__SANS__", self._sans_family).replace("__MONO__", self._mono_family)
+        qss = (
+            qss.replace("__SANS__", self._sans_family)
+            .replace("__MONO__", self._mono_family)
+            .replace("__CHECK__", _check_icon_path().replace("\\", "/"))
+        )
         self.setStyleSheet(qss)
 
     def refresh_ui(self) -> None:
