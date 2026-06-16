@@ -268,3 +268,90 @@ def test_sync_webdav_on_shutdown_persists_conflict_notice(
     notice = consume_webdav_pending_notice()
     assert notice
     assert "слияние" in notice.lower()
+
+
+def test_push_local_upload_only_detects_conflict_without_saved_hash(
+    tmp_path: Path,
+    webdav_config: WebDavConfig,
+) -> None:
+    storage = Storage(path=tmp_path / "data.json", migrate_legacy=False)
+    local = {
+        "tasks": [{"id": "local", "day": "2026-06-15", "title": "Local", "status": "open", "sessions": []}],
+        "ui": {},
+    }
+    storage.path.write_text(json.dumps(local), encoding="utf-8")
+    remote_payload = json.dumps(
+        {
+            "tasks": [{"id": "remote", "day": "2026-06-15", "title": "Remote", "status": "open", "sessions": []}],
+            "ui": {},
+        },
+    ).encode("utf-8")
+
+    config = WebDavConfig.from_dict(webdav_config.to_dict())
+    config.last_remote_content_hash = ""
+
+    def fake_urlopen(request, timeout=0):
+        method = request.get_method()
+        response = MagicMock()
+        response.status = 204 if method == "PUT" else 200
+        response.read.return_value = remote_payload if method == "GET" else b""
+        response.headers.items.return_value = []
+        response.__enter__ = lambda self: response
+        response.__exit__ = lambda *args: None
+        return response
+
+    with patch("timerapp_ag.webdav_client.urllib.request.urlopen", side_effect=fake_urlopen):
+        with patch.object(WebDavClient, "exists", return_value=True):
+            with patch("timerapp_ag.webdav_sync.mark_webdav_sync_ok"):
+                outcome = push_local_upload_only(storage, config, require_enabled=False)
+
+    assert outcome.conflict_detected is True
+    assert outcome.notice
+
+
+def test_sync_webdav_on_shutdown_upload_only_persists_conflict_notice(
+    tmp_path: Path,
+    webdav_config: WebDavConfig,
+    monkeypatch,
+) -> None:
+    config_path = tmp_path / "webdav.json"
+    monkeypatch.setattr("timerapp_ag.webdav_config.platform_paths.webdav_config_path", lambda: config_path)
+
+    storage = Storage(path=tmp_path / "data.json", migrate_legacy=False)
+    storage.path.write_text(
+        json.dumps({"tasks": [{"id": "l1", "day": "2026-06-15", "title": "Local", "status": "open", "sessions": []}], "ui": {}}),
+        encoding="utf-8",
+    )
+
+    active = WebDavConfig.from_dict(webdav_config.to_dict())
+    active.enabled = True
+    active.sync_on_shutdown = True
+    active.shutdown_upload_only = True
+    active.last_remote_content_hash = ""
+    save_webdav_config(active)
+
+    remote_payload = json.dumps(
+        {"tasks": [{"id": "r1", "day": "2026-06-15", "title": "Remote", "status": "open", "sessions": []}], "ui": {}},
+    ).encode("utf-8")
+
+    def fake_urlopen(request, timeout=0):
+        method = request.get_method()
+        response = MagicMock()
+        response.status = 204 if method == "PUT" else 200
+        response.read.return_value = remote_payload if method == "GET" else b""
+        response.headers.items.return_value = []
+        response.__enter__ = lambda self: response
+        response.__exit__ = lambda *args: None
+        return response
+
+    with patch("timerapp_ag.webdav_client.urllib.request.urlopen", side_effect=fake_urlopen):
+        with patch.object(WebDavClient, "exists", return_value=True):
+            with patch("timerapp_ag.webdav_sync.mark_webdav_sync_ok"):
+                outcome = sync_webdav_on_shutdown(storage)
+
+    assert outcome.conflict_detected is True
+    from timerapp_ag.webdav_config import peek_webdav_pending_notice
+
+    notice = peek_webdav_pending_notice()
+    assert notice
+    assert "локальная копия" in notice.lower()

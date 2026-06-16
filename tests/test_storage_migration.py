@@ -110,6 +110,18 @@ def test_load_returns_empty_when_main_and_backup_corrupt(tmp_path: Path) -> None
     assert state.tasks == []
 
 
+def test_load_ignores_backup_with_invalid_task_schema(tmp_path: Path) -> None:
+    path = tmp_path / "data.json"
+    backup = tmp_path / "data.json.bak"
+    backup.write_text(json.dumps({"tasks": [{"id": "t1"}], "ui": {}}), encoding="utf-8")
+    path.write_text("{ broken", encoding="utf-8")
+
+    storage = Storage(path=path, migrate_legacy=False)
+    state = storage.load()
+
+    assert state.tasks == []
+
+
 def test_create_backup_writes_timestamped_copy(tmp_path: Path) -> None:
     path = tmp_path / "data.json"
     storage = Storage(path=path, migrate_legacy=False)

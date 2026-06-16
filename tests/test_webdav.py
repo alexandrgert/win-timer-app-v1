@@ -26,12 +26,49 @@ def webdav_config() -> WebDavConfig:
 def test_webdav_config_round_trip(tmp_path: Path, monkeypatch) -> None:
     path = tmp_path / "webdav.json"
     monkeypatch.setattr("timerapp_ag.platform_paths.webdav_config_path", lambda: path)
-    config = WebDavConfig(enabled=True, url="https://x/", username="u", password="p")
+    config = WebDavConfig(
+        enabled=True,
+        url="https://x/",
+        username="u",
+        password="p",
+        shutdown_upload_only=True,
+        pending_notice="pending",
+        last_remote_content_hash="abc",
+    )
     save_webdav_config(config)
     loaded = json.loads(path.read_text(encoding="utf-8"))
     assert loaded["url"] == "https://x/"
     assert loaded["password"] == "p"
     assert loaded["device_id"]
+    assert loaded["shutdown_upload_only"] is True
+    assert loaded["pending_notice"] == "pending"
+    assert loaded["last_remote_content_hash"] == "abc"
+
+
+def test_saved_enabled_false_is_not_overridden_by_env(tmp_path: Path, monkeypatch) -> None:
+    path = tmp_path / "webdav.json"
+    monkeypatch.setattr("timerapp_ag.platform_paths.webdav_config_path", lambda: path)
+    monkeypatch.setenv("WEBDAV_ENABLED", "true")
+    save_webdav_config(WebDavConfig(enabled=False, url="https://x/", username="u", password="p"))
+
+    from timerapp_ag.webdav_config import load_webdav_config
+
+    assert load_webdav_config().enabled is False
+
+
+def test_peek_and_clear_pending_notice(tmp_path: Path, monkeypatch) -> None:
+    path = tmp_path / "webdav.json"
+    monkeypatch.setattr("timerapp_ag.platform_paths.webdav_config_path", lambda: path)
+    from timerapp_ag.webdav_config import (
+        clear_webdav_pending_notice,
+        peek_webdav_pending_notice,
+        save_webdav_pending_notice,
+    )
+
+    save_webdav_pending_notice("hello")
+    assert peek_webdav_pending_notice() == "hello"
+    clear_webdav_pending_notice()
+    assert peek_webdav_pending_notice() == ""
 
 
 def test_remote_url_joins_base_and_path(webdav_config: WebDavConfig) -> None:

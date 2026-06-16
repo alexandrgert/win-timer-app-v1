@@ -98,16 +98,21 @@ def webdav_config_path():
     return platform_paths.webdav_config_path()
 
 
-def apply_env_defaults(config: WebDavConfig) -> WebDavConfig:
+def apply_env_defaults(config: WebDavConfig, *, respect_saved_enabled: bool = False) -> WebDavConfig:
     """Подставить WEBDAV_* из окружения, если поля пустые."""
     url = (os.environ.get("WEBDAV_URL") or "").strip()
     username = (os.environ.get("WEBDAV_USERNAME") or os.environ.get("WEBDAV_USER") or "").strip()
     password = os.environ.get("WEBDAV_PASSWORD") or ""
     remote_path = (os.environ.get("WEBDAV_REMOTE_PATH") or "").strip()
     enabled_env = (os.environ.get("WEBDAV_ENABLED") or "").strip().lower()
+    enabled_from_env = enabled_env in {"1", "true", "yes", "on"}
+    if respect_saved_enabled:
+        enabled = config.enabled
+    else:
+        enabled = config.enabled or enabled_from_env
 
     return WebDavConfig(
-        enabled=config.enabled or enabled_env in {"1", "true", "yes", "on"},
+        enabled=enabled,
         url=config.url or url,
         username=config.username or username,
         password=config.password or password,
@@ -136,7 +141,7 @@ def load_webdav_config() -> WebDavConfig:
         config = apply_env_defaults(WebDavConfig())
         config.ensure_device_id()
         return config
-    config = apply_env_defaults(WebDavConfig.from_dict(payload))
+    config = apply_env_defaults(WebDavConfig.from_dict(payload), respect_saved_enabled=True)
     config.ensure_device_id()
     return config
 
@@ -171,12 +176,22 @@ def save_webdav_pending_notice(message: str) -> None:
     save_webdav_config(updated)
 
 
-def consume_webdav_pending_notice() -> str:
+def peek_webdav_pending_notice() -> str:
     config = load_webdav_config()
-    notice = (config.pending_notice or "").strip()
-    if not notice:
-        return ""
+    return (config.pending_notice or "").strip()
+
+
+def clear_webdav_pending_notice() -> None:
+    config = load_webdav_config()
+    if not (config.pending_notice or "").strip():
+        return
     updated = WebDavConfig.from_dict(config.to_dict())
     updated.pending_notice = ""
     save_webdav_config(updated)
+
+
+def consume_webdav_pending_notice() -> str:
+    notice = peek_webdav_pending_notice()
+    if notice:
+        clear_webdav_pending_notice()
     return notice

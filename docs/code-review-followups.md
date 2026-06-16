@@ -14,6 +14,10 @@
 | 6 | `quit()` из signal handler | `QTimer.singleShot(0, …)` в event loop |
 | 7 | Release notes завышали гарантии | Уточнены SIGTERM vs `kill -9` |
 | — | Падение при битом `.bak` | `_load_from_rolling_backup()` с try/except |
+| — | WebDAV conflict без hash; pending notice UX | `_remote_changed_since_sync`, peek/clear + QMessageBox |
+| — | Legacy merge: только count сессий | сравнение содержимого сессий; `task_richer` по длительности |
+| — | `WEBDAV_ENABLED` перебивал UI | `respect_saved_enabled` в `load_webdav_config` |
+| — | Android: data loss, schema, ANR | atomic save, `.bak`, `duration_minutes?`, IO off main thread |
 
 ---
 
@@ -53,6 +57,6 @@
 ## Прочие рекомендации
 
 - **Тесты shutdown:** покрыть `run_shutdown_backup` (save + backup + mock WebDAV).
-- **`task_richer`:** при равном числе сессий сравнивать `ended_at` / длительность, не только `created_at`.
-- **Android MVP** (локально): atomic save, полный `ui` JSON, release keystore — перед коммитом в main.
-- **CI:** job `build-apk` после стабилизации Android-ветки.
+- **`task_richer`:** при равном числе сессий сравнивать `ended_at` / длительность — **сделано в v0.4.2**
+- **Android MVP:** atomic save, nullable `duration_minutes`, unit tests — **v0.4.2**; release keystore — перед Play Store
+- **CI:** job `build-apk` — **добавлен в v0.4.2**

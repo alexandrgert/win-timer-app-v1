@@ -1,15 +1,37 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from pathlib import Path
 
 from ..models import Task
 from .state import AppState
 
 
+def _session_total_seconds(task: Task) -> int:
+    total = 0
+    for session in task.sessions:
+        if not session.started_at:
+            continue
+        try:
+            start = datetime.fromisoformat(session.started_at)
+            if session.ended_at:
+                end = datetime.fromisoformat(session.ended_at)
+                total += max(0, int((end - start).total_seconds()))
+            else:
+                total += max(0, int((datetime.now() - start).total_seconds()))
+        except ValueError:
+            continue
+    return total
+
+
 def task_richer(candidate: Task, current: Task) -> bool:
     if len(candidate.sessions) != len(current.sessions):
         return len(candidate.sessions) > len(current.sessions)
+    cand_seconds = _session_total_seconds(candidate)
+    curr_seconds = _session_total_seconds(current)
+    if cand_seconds != curr_seconds:
+        return cand_seconds > curr_seconds
     return candidate.created_at >= current.created_at
 
 
@@ -49,6 +71,21 @@ def merge_states(states: list[AppState]) -> AppState:
     return AppState(tasks=list(tasks_by_id.values()), ui=merged_ui)
 
 
+def _sessions_equivalent(left_sessions: list, right_sessions: list) -> bool:
+    if len(left_sessions) != len(right_sessions):
+        return False
+    left_sorted = sorted(left_sessions, key=lambda session: session.id)
+    right_sorted = sorted(right_sessions, key=lambda session: session.id)
+    for left_session, right_session in zip(left_sorted, right_sorted, strict=True):
+        if left_session.id != right_session.id:
+            return False
+        if left_session.started_at != right_session.started_at:
+            return False
+        if left_session.ended_at != right_session.ended_at:
+            return False
+    return True
+
+
 def states_equivalent(left: AppState, right: AppState) -> bool:
     if len(left.tasks) != len(right.tasks):
         return False
@@ -59,6 +96,6 @@ def states_equivalent(left: AppState, right: AppState) -> bool:
             return False
         if left_task.title != right_task.title:
             return False
-        if len(left_task.sessions) != len(right_task.sessions):
+        if not _sessions_equivalent(left_task.sessions, right_task.sessions):
             return False
     return left.ui == right.ui

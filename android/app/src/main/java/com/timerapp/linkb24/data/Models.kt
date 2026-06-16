@@ -49,7 +49,7 @@ data class TaskDto(
 @Serializable
 data class FocusTimerDto(
     @SerialName("selected_minutes") val selectedMinutes: Int = 25,
-    @SerialName("duration_minutes") val durationMinutes: Int = 25,
+    @SerialName("duration_minutes") val durationMinutes: Int? = null,
     @SerialName("ends_at") val endsAt: String? = null,
 )
 
@@ -71,5 +71,6 @@ data class AppDataDto(
 val AppJson = Json {
     ignoreUnknownKeys = true
     encodeDefaults = true
+    explicitNulls = false
     prettyPrint = true
 }

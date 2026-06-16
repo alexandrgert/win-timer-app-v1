@@ -191,7 +191,10 @@ class Storage:
             data = json.loads(self.rolling_backup_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             return None
-        state = AppState.from_dict(data)
+        try:
+            state = AppState.from_dict(data)
+        except (KeyError, TypeError, ValueError):
+            return None
         self.save(state, update_rolling_backup=False)
         return state
 

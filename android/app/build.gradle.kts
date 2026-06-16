@@ -13,8 +13,8 @@ android {
         applicationId = "com.timerapp.linkb24"
         minSdk = 29
         targetSdk = 35
-        versionCode = 401
-        versionName = "0.4.1"
+        versionCode = 402
+        versionName = "0.4.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -25,6 +25,7 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = false
+            // MVP: debug signing until a release keystore is configured for Play Store.
             signingConfig = signingConfigs.getByName("debug")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
@@ -70,4 +71,7 @@ dependencies {
 
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
+
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
 }

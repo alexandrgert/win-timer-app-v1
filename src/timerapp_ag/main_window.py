@@ -59,7 +59,7 @@ from .app_info import resolve_app_title
 from .controller import AppController, format_day_label, format_duration, format_hm
 from .models import Task, TaskStatus
 from .runtime_info import build_about_report
-from .webdav_config import WebDavConfig, load_webdav_config
+from .webdav_config import WebDavConfig, clear_webdav_pending_notice, load_webdav_config
 from .webdav_sync import SyncOutcome, pull_and_merge, push_local, save_webdav_settings, test_webdav_connection
 
 _TRAY_TOOLTIP_FLOATING_AUTO = object()
@@ -1515,7 +1515,13 @@ class MainWindow(QMainWindow):
         if not notice:
             return
         icon = QSystemTrayIcon.MessageIcon.Warning if "не удалось" in notice.lower() else QSystemTrayIcon.MessageIcon.Information
-        self._show_tray_message("TaskTimer link B24", notice, icon=icon, timeout=8000)
+        shown = False
+        if self.tray_icon and self.tray_icon.isVisible():
+            self._show_tray_message("TaskTimer link B24", notice, icon=icon, timeout=8000)
+            shown = True
+        if not shown:
+            QMessageBox.information(self, "TaskTimer link B24", notice)
+        clear_webdav_pending_notice()
         self.controller.webdav_startup_notice = None
 
     def _build_ui(self) -> None:

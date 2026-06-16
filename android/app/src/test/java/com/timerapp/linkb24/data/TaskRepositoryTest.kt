@@ -1,0 +1,101 @@
+package com.timerapp.linkb24.data
+
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+import java.io.File
+import kotlin.io.path.createTempDirectory
+
+class TaskRepositoryTest {
+    private fun tempDir(): File = createTempDirectory("taskrepo-test-").toFile()
+
+    @Test
+    fun load_returns_empty_when_files_missing() {
+        val dir = tempDir()
+        val repository = TaskRepository(File(dir, "data.json"))
+
+        val loaded = repository.load()
+
+        assertTrue(loaded.tasks.isEmpty())
+    }
+
+    @Test
+    fun save_is_atomic_and_creates_backup() {
+        val dir = tempDir()
+        val repository = TaskRepository(File(dir, "data.json"))
+        val data = repository.createTask("First", AppDataDto())
+
+        repository.save(data)
+        val updated = repository.createTask("Second", data)
+        repository.save(updated)
+
+        assertTrue(File(dir, "data.json").isFile)
+        assertTrue(File(dir, "data.json.bak").isFile)
+        assertEquals(2, repository.load().tasks.size)
+    }
+
+    @Test
+    fun load_recovers_from_backup_when_main_file_corrupt() {
+        val dir = tempDir()
+        val repository = TaskRepository(File(dir, "data.json"))
+        val first = repository.createTask("Backup task", AppDataDto())
+        repository.save(first)
+        repository.save(first)
+        File(dir, "data.json").writeText("{ broken")
+
+        val loaded = repository.load()
+
+        assertEquals("Backup task", loaded.tasks.single().title)
+    }
+
+    @Test
+    fun load_accepts_null_focus_timer_duration() {
+        val dir = tempDir()
+        val file = File(dir, "data.json")
+        file.writeText(
+            """
+            {
+              "tasks": [],
+              "ui": {
+                "schema_version": 2,
+                "focus_timer": {
+                  "selected_minutes": 25,
+                  "duration_minutes": null,
+                  "ends_at": null
+                }
+              }
+            }
+            """.trimIndent(),
+        )
+        val repository = TaskRepository(file)
+
+        val loaded = repository.load()
+
+        assertNull(loaded.ui.focusTimer.durationMinutes)
+    }
+
+    @Test
+    fun parseInstant_returns_null_for_invalid_value() {
+        assertNull(parseInstant(""))
+        assertNull(parseInstant("not-a-date"))
+    }
+
+    @Test
+    fun startTask_does_not_duplicate_open_session() {
+        val dir = tempDir()
+        val repository = TaskRepository(File(dir, "data.json"))
+        val created = repository.createTask("Timer", AppDataDto())
+        val running = repository.toggleTimer(created.tasks.single().id, created)
+        val resumed = repository.toggleTimer(running.tasks.single().id, running)
+
+        assertEquals(1, resumed.tasks.single().sessions.size)
+    }
+
+    @Test
+    fun parseInstant_parses_offset_datetime() {
+        val instant = parseInstant("2026-06-15T10:00:00+03:00")
+        assertNotNull(instant)
+    }
+}

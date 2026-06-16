@@ -2,6 +2,8 @@ package com.timerapp.linkb24.data
 
 import android.content.Context
 import java.io.File
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalDateTime
@@ -12,33 +14,59 @@ import java.util.UUID
 
 private val zoneId: ZoneId = ZoneId.systemDefault()
 
-fun parseInstant(value: String): Instant {
+fun parseInstant(value: String): Instant? {
+    if (value.isBlank()) {
+        return null
+    }
     return runCatching { Instant.parse(value) }.getOrElse {
         runCatching {
             OffsetDateTime.parse(value, DateTimeFormatter.ISO_OFFSET_DATE_TIME).toInstant()
         }.getOrElse {
-            LocalDateTime.parse(value, DateTimeFormatter.ISO_LOCAL_DATE_TIME)
-                .atZone(zoneId)
-                .toInstant()
+            runCatching {
+                LocalDateTime.parse(value, DateTimeFormatter.ISO_LOCAL_DATE_TIME)
+                    .atZone(zoneId)
+                    .toInstant()
+            }.getOrNull()
         }
     }
 }
 
-class TaskRepository(context: Context) {
-    private val dataFile = File(context.filesDir, "data.json")
+class TaskRepository(
+    private val dataFile: File,
+) {
+    constructor(context: Context) : this(File(context.filesDir, "data.json"))
+
+    private val backupFile: File
+        get() = File(dataFile.parentFile, "${dataFile.name}.bak")
 
     fun load(): AppDataDto {
-        if (!dataFile.isFile) {
-            return AppDataDto()
+        loadFromFile(dataFile)?.let { return it }
+        return loadFromFile(backupFile) ?: AppDataDto()
+    }
+
+    private fun loadFromFile(file: File): AppDataDto? {
+        if (!file.isFile) {
+            return null
         }
         return runCatching {
-            AppJson.decodeFromString(AppDataDto.serializer(), dataFile.readText())
-        }.getOrDefault(AppDataDto())
+            AppJson.decodeFromString(AppDataDto.serializer(), file.readText())
+        }.getOrNull()
     }
 
     fun save(data: AppDataDto) {
         dataFile.parentFile?.mkdirs()
-        dataFile.writeText(AppJson.encodeToString(AppDataDto.serializer(), data))
+        val payload = AppJson.encodeToString(AppDataDto.serializer(), data)
+        val tempFile = File(dataFile.parentFile, "${dataFile.name}.tmp")
+        tempFile.writeText(payload)
+        if (dataFile.isFile) {
+            dataFile.copyTo(backupFile, overwrite = true)
+        }
+        Files.move(
+            tempFile.toPath(),
+            dataFile.toPath(),
+            StandardCopyOption.REPLACE_EXISTING,
+            StandardCopyOption.ATOMIC_MOVE,
+        )
     }
 
     fun createTask(title: String, data: AppDataDto): AppDataDto {
@@ -88,6 +116,9 @@ class TaskRepository(context: Context) {
     }
 
     private fun startTask(task: TaskDto): TaskDto {
+        if (task.sessions.any { it.endedAt == null }) {
+            return task.copy(status = TaskStatus.RUNNING)
+        }
         val now = OffsetDateTime.now(zoneId).format(DateTimeFormatter.ISO_OFFSET_DATE_TIME)
         val session = SessionDto(
             id = UUID.randomUUID().toString().replace("-", ""),
@@ -112,7 +143,7 @@ class TaskRepository(context: Context) {
 fun taskDurationSeconds(task: TaskDto, nowMillis: Long = System.currentTimeMillis()): Long {
     val nowInstant = Instant.ofEpochMilli(nowMillis)
     return task.sessions.sumOf { session ->
-        val start = parseInstant(session.startedAt)
+        val start = parseInstant(session.startedAt) ?: return@sumOf 0L
         val end = session.endedAt?.let(::parseInstant) ?: nowInstant
         (end.epochSecond - start.epochSecond).coerceAtLeast(0)
     }

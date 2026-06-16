@@ -139,6 +139,17 @@ def _finalize_merged_state(storage: Storage, merged: AppState, *, reason: str) -
     return merged
 
 
+def _remote_changed_since_sync(
+    config: WebDavConfig,
+    remote_hash: str,
+    local_hash: str,
+) -> bool:
+    """Удалённый файл изменился с прошлой синхронизации или отличается от локального."""
+    if config.last_remote_content_hash:
+        return remote_hash != config.last_remote_content_hash
+    return bool(local_hash) and remote_hash != local_hash
+
+
 def pull_and_merge(
     storage: Storage,
     config: WebDavConfig | None = None,
@@ -158,14 +169,12 @@ def pull_and_merge(
         remote_payload = client.download()
         remote_meta = _read_remote_meta(client, config)
         remote_hash = _remote_payload_hash(remote_payload, remote_meta)
-        if (
-            config.last_remote_content_hash
-            and remote_hash != config.last_remote_content_hash
-        ):
+        local_hash = content_hash(storage.path.read_bytes()) if storage.path.is_file() else ""
+        if _remote_changed_since_sync(config, remote_hash, local_hash):
             conflict_detected = True
             logger.warning(
                 "WebDAV conflict: remote hash changed (%s -> %s)",
-                config.last_remote_content_hash[:12],
+                (config.last_remote_content_hash or local_hash)[:12],
                 remote_hash[:12],
             )
         merged = _merge_local_with_remote(storage, remote_payload)
@@ -203,10 +212,8 @@ def push_local(
         remote_payload = client.download()
         remote_meta = _read_remote_meta(client, config)
         remote_hash = _remote_payload_hash(remote_payload, remote_meta)
-        if (
-            config.last_remote_content_hash
-            and remote_hash != config.last_remote_content_hash
-        ):
+        local_hash = content_hash(storage.path.read_bytes())
+        if _remote_changed_since_sync(config, remote_hash, local_hash):
             conflict_detected = True
             logger.warning("WebDAV push: remote changed since last sync, merging before upload")
         merged = _merge_local_with_remote(storage, remote_payload)
@@ -242,23 +249,22 @@ def push_local_upload_only(
 
     client = WebDavClient(config)
     conflict_detected = False
+    local_payload = storage.path.read_bytes()
+    local_hash = content_hash(local_payload)
 
     if client.exists():
         remote_payload = client.download()
         remote_meta = _read_remote_meta(client, config)
         remote_hash = _remote_payload_hash(remote_payload, remote_meta)
-        if (
-            config.last_remote_content_hash
-            and remote_hash != config.last_remote_content_hash
-        ):
+        if _remote_changed_since_sync(config, remote_hash, local_hash):
             conflict_detected = True
             logger.warning(
                 "WebDAV upload-only: remote changed since last sync (%s -> %s)",
-                config.last_remote_content_hash[:12],
+                (config.last_remote_content_hash or local_hash)[:12],
                 remote_hash[:12],
             )
 
-    payload = storage.path.read_bytes()
+    payload = local_payload
     meta = _upload_payload(client, config, payload)
     mark_webdav_sync_ok(config, remote_hash=meta.content_hash, had_conflict=conflict_detected)
 
