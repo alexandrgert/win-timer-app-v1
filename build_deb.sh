@@ -15,6 +15,8 @@ INSTALL_PREFIX="${INSTALL_PREFIX:-/opt/tasktimer-link-b24}"
 BIN_NAME="${BIN_NAME:-tasktimer-link-b24}"
 BUMP="${BUMP:-patch}"
 DIST_DIR="$PROJECT_DIR/dist"
+OFFLINE="${OFFLINE:-0}"
+ALLOW_NO_BUMP="${ALLOW_NO_BUMP:-0}"
 
 require_amd64_host() {
   case "$(uname -m)" in
@@ -36,9 +38,15 @@ if [[ ! -x "$PYTHON" ]]; then
   exit 1
 fi
 
-if [[ -z "${VERSION:-}" && "${NO_BUMP:-0}" != "1" ]]; then
-  echo "==> Semver bump (${BUMP}) в pyproject.toml"
-  "$PYTHON" "$PROJECT_DIR/scripts/bump_version.py" "$BUMP" >/dev/null
+if [[ -z "${VERSION:-}" ]]; then
+  if [[ "${NO_BUMP:-0}" == "1" && "$ALLOW_NO_BUMP" != "1" ]]; then
+    echo "NO_BUMP=1 игнорируется: для сборок версия всегда поднимается минимум на patch." >&2
+    echo "Если нужно явно отключить bump, используйте ALLOW_NO_BUMP=1 NO_BUMP=1." >&2
+  fi
+  if [[ "${NO_BUMP:-0}" != "1" || "$ALLOW_NO_BUMP" != "1" ]]; then
+    echo "==> Semver bump (${BUMP}) в pyproject.toml"
+    "$PYTHON" "$PROJECT_DIR/scripts/bump_version.py" "$BUMP" >/dev/null
+  fi
 fi
 
 VERSION="${VERSION:-$(
@@ -53,8 +61,12 @@ fi
 
 require_amd64_host
 
-echo "==> Установка зависимостей сборки"
-"$PYTHON" -m pip install -q -e "$PROJECT_DIR" -r "$PROJECT_DIR/requirements-build.txt"
+if [[ "$OFFLINE" == "1" ]]; then
+  echo "==> OFFLINE=1: пропускаю установку зависимостей сборки"
+else
+  echo "==> Установка зависимостей сборки"
+  "$PYTHON" -m pip install -q -e "$PROJECT_DIR" -r "$PROJECT_DIR/requirements-build.txt"
+fi
 
 deb_file="${PACKAGE_NAME}-${VERSION}-${TARGET_ARCH}.deb"
 deb_out="${DIST_DIR}/${deb_file}"
