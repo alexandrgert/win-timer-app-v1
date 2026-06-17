@@ -34,6 +34,17 @@ def test_session_duration_never_negative() -> None:
     assert session.duration_seconds() == 0
 
 
+def test_session_bitrix_record_id_round_trip() -> None:
+    session = Session(
+        id="s1",
+        started_at="2026-01-01T10:00:00",
+        ended_at="2026-01-01T10:30:00",
+        bitrix_record_id="999",
+    )
+    restored = Session.from_dict(session.to_dict())
+    assert restored.bitrix_record_id == "999"
+
+
 def test_task_total_seconds_sums_sessions() -> None:
     task = Task(
         id="t1",

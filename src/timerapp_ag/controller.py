@@ -328,6 +328,14 @@ class AppController:
         task_ops.update_session(self.state, task_id, session_id, started_at, ended_at)
         self.save()
 
+    def mark_sessions_transferred(self, task_id: str, session_ids, record_id) -> None:
+        """Mark given sessions as transferred to Bitrix with the created record id."""
+        ids = set(session_ids)
+        for session in self.find_task(task_id).sessions:
+            if session.id in ids:
+                session.bitrix_record_id = str(record_id)
+        self.save()
+
     def task_elapsed_text(self, task: Task) -> str:
         return formatting.format_duration(task.total_seconds(datetime.now()))
 
