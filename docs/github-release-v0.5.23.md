@@ -22,7 +22,6 @@
 | Linux amd64 | `tasktimer-link-b24-0.5.23-amd64.deb` |
 | Windows x64 | `tasktimer-link-b24-0.5.23-win64.exe` |
 | macOS arm64 | `tasktimer-link-b24-0.5.23-macos-arm64.zip` |
-| macOS x64 | `tasktimer-link-b24-0.5.23-macos-x86_64.zip` |
 | Android 10+ | `tasktimer-link-b24-0.5.23-android.apk` |
 
 Инструкция: [ИНСТРУКЦИЯ.md](https://github.com/alexandrgert/timer-app/blob/main/ИНСТРУКЦИЯ.md) · подробные release notes: [docs/release-notes-v0.5.23.md](https://github.com/alexandrgert/timer-app/blob/main/docs/release-notes-v0.5.23.md)
