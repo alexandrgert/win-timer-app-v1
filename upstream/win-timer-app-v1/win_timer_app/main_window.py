@@ -61,9 +61,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .app_info import APP_TITLE
 from .bitrix import Bitrix24Client, entity_url, looks_like_webhook
 from .controller import AppController, format_day_label, format_duration, format_hm
 from .models import Task, TaskStatus
+from .runtime_info import build_about_report
 
 
 class CreateTaskCard(QFrame):
@@ -434,6 +436,35 @@ class _CallableThread(QThread):
             self.failed.emit(str(exc))
             return
         self.succeeded.emit(result)
+
+
+class AboutDialog(QDialog):
+    def __init__(self, controller: AppController, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("О программе")
+        self.setMinimumWidth(520)
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+
+        title = QLabel(APP_TITLE)
+        title.setObjectName("sectionTitle")
+        layout.addWidget(title)
+
+        details = QPlainTextEdit()
+        details.setReadOnly(True)
+        details.setPlainText(
+            build_about_report(
+                stored_webhook=controller.bitrix_webhook(),
+                data_path=controller.storage.path,
+            )
+        )
+        details.setMinimumHeight(280)
+        layout.addWidget(details)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
+        buttons.accepted.connect(self.accept)
+        layout.addWidget(buttons)
 
 
 class SettingsDialog(QDialog):
@@ -1733,6 +1764,10 @@ class MainWindow(QMainWindow):
         settings_action.triggered.connect(self._open_settings)
         tray_menu.addAction(settings_action)
 
+        about_action = QAction("О программе", self)
+        about_action.triggered.connect(self._open_about)
+        tray_menu.addAction(about_action)
+
         tray_menu.addSeparator()
 
         exit_action = QAction("Выход", self)
@@ -2157,6 +2192,9 @@ class MainWindow(QMainWindow):
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self.controller.set_reminder_interval_minutes(dialog.reminder_spin.value())
             self.controller.set_bitrix_webhook(dialog.webhook_edit.text())
+
+    def _open_about(self) -> None:
+        AboutDialog(self.controller, self).exec()
 
     def _open_create_dialog(self) -> None:
         self.create_dialog.open_clean()
