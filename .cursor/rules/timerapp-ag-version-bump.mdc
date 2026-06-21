@@ -1,6 +1,6 @@
 ---
-description: TaskTimer — semver в pyproject.toml перед любой сборкой (.deb и др.)
-globs: build_deb.sh,build_*.sh,pyproject.toml,scripts/bump_version.py
+description: TaskTimer — semver в pyproject.toml и синхронизация версий перед сборкой и GitHub Release
+globs: build_deb.sh,build_*.sh,build_apk.sh,android/**,pyproject.toml,scripts/bump_version.py
 alwaysApply: true
 ---
 
@@ -9,6 +9,34 @@ alwaysApply: true
 ## Источник версии
 
 Единственный источник — **`pyproject.toml`** → `[project].version`.
+
+## Android APK: сверка перед сборкой
+
+**Перед `./build_apk.sh`, push в `main` и GitHub Release** сверьте, что Android-версия совпадает с `pyproject.toml`.
+
+CI job `build-apk` берёт **`versionName` из `android/app/build.gradle.kts`**, а не из `pyproject.toml`. Если не синхронизировать — в релиз попадёт APK со старой версией и потребуется повторный push/CI.
+
+### Файлы
+
+| Файл | Поле |
+|------|------|
+| `pyproject.toml` | `[project].version` — **эталон** |
+| `android/app/build.gradle.kts` | `versionName` (semver), `versionCode` (целое, монотонно растёт) |
+
+### Чеклист (агент и разработчик)
+
+1. Прочитать версию из `pyproject.toml`.
+2. Убедиться, что в `build.gradle.kts`: `versionName = "<та же версия>"`.
+3. Поднять `versionCode` (например `523` для `0.5.23`), если версия изменилась.
+4. Только после совпадения — `./build_apk.sh` или push (CI соберёт APK).
+
+```bash
+# быстрая проверка
+python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])"
+grep versionName android/app/build.gradle.kts
+```
+
+Если версии различаются — **сначала правка `build.gradle.kts`, commit, потом сборка/релиз**. Не выкладывать на GitHub Release набор, где `.deb`/`.exe` — одна версия, а `.apk` — другая.
 
 ## Обязательный bump при сборке
 
@@ -36,3 +64,5 @@ BUMP=minor ./build_deb.sh
 ## Агент
 
 После **фич** перед сборкой — `BUMP=minor`. После **фиксов** — `./build_deb.sh` (patch). Локальная сборка ≠ исключение из bump.
+
+Перед **GitHub Release** (все платформы): сверить `versionName`/`versionCode` в `android/app/build.gradle.kts` с `pyproject.toml`; при расхождении — исправить и закоммитить **до** push, чтобы CI не собрал APK со старой версией.
