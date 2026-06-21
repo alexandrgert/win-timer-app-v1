@@ -602,8 +602,10 @@ class SessionEditDialog(QDialog):
         self.select_all_checkbox.toggled.connect(self._toggle_select_all)
         layout.addWidget(self.select_all_checkbox)
 
-        self.table = QTableWidget(0, 5)
-        self.table.setHorizontalHeaderLabels(["", "Начало", "Окончание", "Длительность", "Передано"])
+        self.table = QTableWidget(0, 6)
+        self.table.setHorizontalHeaderLabels(
+            ["", "Начало", "Окончание", "Длительность", "Комментарий", "Передано"]
+        )
         self.table.verticalHeader().setVisible(False)
         self.table.verticalHeader().setDefaultSectionSize(36)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -618,7 +620,8 @@ class SessionEditDialog(QDialog):
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
         self.table.itemSelectionChanged.connect(self._load_current_session)
         layout.addWidget(self.table, 1)
 
@@ -641,6 +644,12 @@ class SessionEditDialog(QDialog):
         self.end_edit.setFixedHeight(34)
         _style_calendar_field(self.end_edit)
         form.addRow("Окончание", self.end_edit)
+
+        self.comment_edit = QPlainTextEdit()
+        self.comment_edit.setObjectName("historyComment")
+        self.comment_edit.setPlaceholderText("Комментарий к интервалу (необязательно)")
+        self.comment_edit.setFixedHeight(56)
+        form.addRow("Комментарий", self.comment_edit)
         layout.addLayout(form)
         layout.addSpacing(4)
 
@@ -721,7 +730,8 @@ class SessionEditDialog(QDialog):
                 self._readonly_cell(end.strftime("%d.%m.%Y %H:%M:%S") if end else "идёт"),
             )
             self.table.setItem(row, 3, self._readonly_cell(format_duration(duration)))
-            self.table.setItem(row, 4, self._readonly_cell(session.bitrix_record_id or ""))
+            self.table.setItem(row, 4, self._readonly_cell(session.comment))
+            self.table.setItem(row, 5, self._readonly_cell(session.bitrix_record_id or ""))
         self.table.blockSignals(False)
         if self.table.rowCount():
             self.table.selectRow(0)
@@ -744,7 +754,12 @@ class SessionEditDialog(QDialog):
         start = self.start_edit.dateTime().toPython()
         end = self.end_edit.dateTime().toPython()
         try:
-            session = self.controller.add_session(self.task.id, start, end)
+            session = self.controller.add_session(
+                self.task.id,
+                start,
+                end,
+                comment=self.comment_edit.toPlainText(),
+            )
         except ValueError as exc:
             QMessageBox.warning(self, "Ошибка", str(exc))
             return
@@ -795,6 +810,7 @@ class SessionEditDialog(QDialog):
         self.start_edit.setDateTime(QDateTime.fromString(session.started_at, Qt.DateFormat.ISODate))
         end_value = session.ended_at or datetime.now().isoformat()
         self.end_edit.setDateTime(QDateTime.fromString(end_value, Qt.DateFormat.ISODate))
+        self.comment_edit.setPlainText(session.comment)
 
     def _save_current_session(self) -> None:
         if not self.selected_session_id:
@@ -802,7 +818,13 @@ class SessionEditDialog(QDialog):
         start = self.start_edit.dateTime().toPython()
         end = self.end_edit.dateTime().toPython()
         try:
-            self.controller.update_session(self.task.id, self.selected_session_id, start, end)
+            self.controller.update_session(
+                self.task.id,
+                self.selected_session_id,
+                start,
+                end,
+                comment=self.comment_edit.toPlainText(),
+            )
         except ValueError as exc:
             QMessageBox.warning(self, "Ошибка", str(exc))
             return
@@ -832,7 +854,10 @@ class SessionEditDialog(QDialog):
             QMessageBox.warning(self, "Битрикс24", "Укажите URL вебхука в настройках.")
             return
         name, ok = QInputDialog.getText(
-            self, "Передача времени", "Название записи:", text=self.task.title
+            self,
+            "Передача времени",
+            "Название записи:",
+            text=next((s.comment for s in sessions if s.comment.strip()), "") or self.task.title,
         )
         name = (name or "").strip()
         if not ok or not name:
