@@ -107,16 +107,16 @@ pytest
 
 | Платформа | Файл |
 |-----------|------|
-| Linux amd64 | `tasktimer-link-b24-0.5.16-amd64.deb` |
-| Windows x64 | `tasktimer-link-b24-0.5.16-win64.exe` |
-| macOS | `tasktimer-link-b24-0.5.16-macos-<arch>.zip` |
-| Android | `tasktimer-link-b24-0.5.16-android.apk` |
+| Linux amd64 | `tasktimer-link-b24-0.5.23-amd64.deb` |
+| Windows x64 | `tasktimer-link-b24-0.5.23-win64.exe` |
+| macOS arm64 | `tasktimer-link-b24-0.5.23-macos-arm64.zip` |
+| Android | `tasktimer-link-b24-0.5.23-android.apk` |
 
 Linux:
 
 ```bash
-wget https://github.com/alexandrgert/timer-app/releases/download/v0.5.16/tasktimer-link-b24-0.5.16-amd64.deb
-sudo dpkg -i tasktimer-link-b24-0.5.16-amd64.deb
+wget https://github.com/alexandrgert/timer-app/releases/download/v0.5.23/tasktimer-link-b24-0.5.23-amd64.deb
+sudo dpkg -i tasktimer-link-b24-0.5.23-amd64.deb
 sudo apt-get install -f
 tasktimer-link-b24
 ```
