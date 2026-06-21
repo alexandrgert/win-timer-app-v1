@@ -460,6 +460,24 @@ class AppController:
         self.next_reminder_at = datetime.now() + self._reminder_interval_td()
         self.save()
 
+    def update_task(
+        self,
+        task_id: str,
+        *,
+        title: str | None = None,
+        description: str | None = None,
+    ) -> Task:
+        task = self.find_task(task_id)
+        if title is not None:
+            stripped = title.strip()
+            if not stripped:
+                raise ValueError("Название задачи не может быть пустым.")
+            task.title = stripped
+        if description is not None:
+            task.description = description.strip()
+        self.save()
+        return task
+
     def add_session(self, task_id: str, started_at: datetime, ended_at: datetime) -> Session:
         if ended_at <= started_at:
             raise ValueError("Время окончания должно быть позже начала.")

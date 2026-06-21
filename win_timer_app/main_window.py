@@ -575,6 +575,60 @@ class SettingsDialog(QDialog):
         super().reject()
 
 
+class TaskEditDialog(QDialog):
+    def __init__(self, controller: AppController, task: Task, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.controller = controller
+        self.task_id = task.id
+        self.setWindowTitle("Редактировать задачу")
+        self.resize(480, 300)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 22, 24, 22)
+        layout.setSpacing(12)
+
+        heading = QLabel("Редактировать задачу")
+        heading.setObjectName("sectionTitle")
+        layout.addWidget(heading)
+
+        form = QFormLayout()
+        form.setHorizontalSpacing(14)
+        form.setVerticalSpacing(10)
+        self.title_edit = QLineEdit(task.title)
+        self.title_edit.setPlaceholderText("Название задачи")
+        form.addRow("Название", self.title_edit)
+
+        self.description_edit = QPlainTextEdit()
+        self.description_edit.setPlaceholderText("Описание (необязательно)")
+        self.description_edit.setPlainText(task.description)
+        self.description_edit.setFixedHeight(90)
+        form.addRow("Описание", self.description_edit)
+        layout.addLayout(form)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def accept(self) -> None:
+        title = self.title_edit.text().strip()
+        if not title:
+            QMessageBox.warning(self, "Ошибка", "Введите название задачи.")
+            return
+        try:
+            self.controller.update_task(
+                self.task_id,
+                title=title,
+                description=self.description_edit.toPlainText(),
+            )
+        except ValueError as exc:
+            QMessageBox.warning(self, "Ошибка", str(exc))
+            return
+        super().accept()
+
+
 class SessionEditDialog(QDialog):
     def __init__(self, controller: AppController, task: Task, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -887,6 +941,7 @@ class TaskRow(QFrame):
     complete_requested = Signal(str)
     resume_requested = Signal(str)
     history_requested = Signal(str)
+    edit_requested = Signal(str)
     delete_requested = Signal(str)
     plan_toggle_requested = Signal(str)
 
@@ -963,6 +1018,13 @@ class TaskRow(QFrame):
             history_button.setCursor(Qt.CursorShape.PointingHandCursor)
             history_button.clicked.connect(lambda: self.history_requested.emit(task.id))
             actions.addWidget(history_button)
+
+            edit_button = QPushButton("Изменить")
+            edit_button.setObjectName("linkAction")
+            edit_button.setToolTip("Изменить название и описание")
+            edit_button.setCursor(Qt.CursorShape.PointingHandCursor)
+            edit_button.clicked.connect(lambda: self.edit_requested.emit(task.id))
+            actions.addWidget(edit_button)
 
             portal_url = entity_url(controller.bitrix_webhook(), task.bitrix)
             if portal_url:
@@ -2104,6 +2166,7 @@ class MainWindow(QMainWindow):
                 row.complete_requested.connect(self._confirm_complete_task)
                 row.resume_requested.connect(self._resume_task)
                 row.history_requested.connect(self._open_history)
+                row.edit_requested.connect(self._open_edit_task)
                 row.delete_requested.connect(self._confirm_delete_task)
                 row.plan_toggle_requested.connect(self._toggle_plan)
                 self.days_layout.addWidget(row)
@@ -2352,6 +2415,12 @@ class MainWindow(QMainWindow):
         dialog = SessionEditDialog(self.controller, task, self)
         dialog.exec()
         self.refresh_ui()
+
+    def _open_edit_task(self, task_id: str) -> None:
+        task = self.controller.find_task(task_id)
+        dialog = TaskEditDialog(self.controller, task, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.refresh_ui()
 
     def _confirm_delete_task(self, task_id: str) -> None:
         task = self.controller.find_task(task_id)
