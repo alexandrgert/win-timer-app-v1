@@ -20,3 +20,11 @@ def resolve_app_version_label() -> str:
         if value:
             return value
     return "dev"
+
+
+def resolve_app_title() -> str:
+    """Window/tray title: app name, with version when known."""
+    version = resolve_app_version_label()
+    if version == "dev":
+        return APP_TITLE
+    return f"{APP_TITLE} {version}"

@@ -311,6 +311,32 @@ class AppController:
                 return task
         return None
 
+    def running_tasks(self) -> list[Task]:
+        return [
+            task
+            for task in self.state.tasks
+            if task.status == TaskStatus.RUNNING and task.active_session()
+        ]
+
+    def timer_panel_task(self) -> Task | None:
+        """Running task, or the most recently paused one with sessions."""
+        running = self.active_task()
+        if running is not None:
+            return running
+        paused = [
+            task
+            for task in self.state.tasks
+            if task.status == TaskStatus.PAUSED and task.sessions
+        ]
+        if not paused:
+            return None
+        return max(paused, key=self._last_pause_dt)
+
+    @staticmethod
+    def _last_pause_dt(task: Task) -> datetime:
+        session = task.sessions[-1]
+        return session.end_dt or session.start_dt
+
     def start_task(self, task_id: str) -> Task:
         now = datetime.now()
         current = self.active_task()
