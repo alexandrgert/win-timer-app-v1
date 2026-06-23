@@ -276,6 +276,22 @@ def test_update_session(controller: AppController) -> None:
     assert task.sessions[0].duration_seconds() == 30 * 60
 
 
+def test_update_task_title_and_description(controller: AppController) -> None:
+    task = controller.create_task("Old", description="old desc")
+    updated = controller.update_task(task.id, title="New title", description="new desc")
+    assert updated.title == "New title"
+    assert updated.description == "new desc"
+    reloaded = controller.find_task(task.id)
+    assert reloaded.title == "New title"
+    assert reloaded.description == "new desc"
+
+
+def test_update_task_rejects_empty_title(controller: AppController) -> None:
+    task = controller.create_task("Keep")
+    with pytest.raises(ValueError):
+        controller.update_task(task.id, title="   ")
+
+
 def test_delete_session_of_running_task_pauses_it(controller: AppController) -> None:
     task = controller.create_task("A", start_now=True)
     running_session = task.active_session()
