@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime
 
 from ..models import Task, TaskStatus
+from .datetime_util import local_now, session_local_date
 from .state import AppState
 
 
@@ -84,16 +85,16 @@ def in_today_plan(task: Task, today: str) -> bool:
 
 
 def today_seconds(task: Task, today: str, *, now: datetime | None = None) -> int:
-    now = now or datetime.now()
+    now = now or local_now()
     return sum(
         session.duration_seconds(now=now)
         for session in task.sessions
-        if session.start_dt.date().isoformat() == today
+        if session_local_date(session.started_at) == today
     )
 
 
 def today_total_seconds(state: AppState, today: str, *, now: datetime | None = None) -> int:
-    now = now or datetime.now()
+    now = now or local_now()
     return sum(today_seconds(task, today, now=now) for task in state.tasks)
 
 

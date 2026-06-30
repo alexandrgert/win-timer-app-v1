@@ -8,7 +8,17 @@ import pytest
 
 from timerapp_ag.storage import Storage
 from timerapp_ag.webdav_client import WebDavClient, WebDavError
-from timerapp_ag.webdav_config import WebDavConfig, save_webdav_config, webdav_config_path
+from datetime import datetime, timedelta
+
+from timerapp_ag.webdav_config import (
+    WebDavConfig,
+    clear_pending_remote_remind,
+    normalize_remind_later_minutes,
+    save_pending_remote_remind,
+    save_webdav_config,
+    should_show_remote_prompt,
+    webdav_config_path,
+)
 from timerapp_ag.webdav_sync import pull_and_merge, push_local
 
 
@@ -41,6 +51,7 @@ def test_webdav_config_round_trip(tmp_path: Path, monkeypatch) -> None:
     assert loaded["password"] == "p"
     assert loaded["device_id"]
     assert loaded["shutdown_upload_only"] is True
+    assert loaded["sync_interval_minutes"] == 0
     assert loaded["pending_notice"] == "pending"
     assert loaded["last_remote_content_hash"] == "abc"
 
@@ -139,3 +150,39 @@ def test_push_local_uploads_file(tmp_path: Path, webdav_config: WebDavConfig) ->
 def test_webdav_client_requires_configuration() -> None:
     with pytest.raises(WebDavError):
         WebDavClient(WebDavConfig())
+
+
+def test_normalize_remind_later_minutes_defaults_to_fifteen() -> None:
+    assert normalize_remind_later_minutes(99) == 15
+    assert normalize_remind_later_minutes(30) == 30
+
+
+def test_should_show_remote_prompt_respects_remind_at() -> None:
+    future = (datetime.now() + timedelta(minutes=30)).isoformat(timespec="seconds")
+    past = (datetime.now() - timedelta(minutes=1)).isoformat(timespec="seconds")
+    config = WebDavConfig(pending_remote_hash="hash-a", pending_remote_remind_at=future)
+    assert should_show_remote_prompt(config, "hash-a") is False
+    assert should_show_remote_prompt(config, "hash-b") is True
+    config = WebDavConfig(pending_remote_hash="hash-a", pending_remote_remind_at=past)
+    assert should_show_remote_prompt(config, "hash-a") is True
+
+
+def test_save_pending_remote_remind_persists_hash(tmp_path: Path, monkeypatch) -> None:
+    path = tmp_path / "webdav.json"
+    monkeypatch.setattr("timerapp_ag.platform_paths.webdav_config_path", lambda: path)
+    config = WebDavConfig(
+        enabled=True,
+        url="https://x/",
+        username="u",
+        password="p",
+        sync_remind_later_minutes=5,
+    )
+    save_webdav_config(config)
+    save_pending_remote_remind(config, "remote-hash")
+    loaded = json.loads(path.read_text(encoding="utf-8"))
+    assert loaded["pending_remote_hash"] == "remote-hash"
+    assert loaded["pending_remote_remind_at"]
+    clear_pending_remote_remind(WebDavConfig.from_dict(loaded))
+    cleared = json.loads(path.read_text(encoding="utf-8"))
+    assert cleared["pending_remote_hash"] == ""
+    assert cleared["pending_remote_remind_at"] is None

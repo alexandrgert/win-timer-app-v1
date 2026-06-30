@@ -81,6 +81,30 @@ sdk.dir=$SDK_ROOT
 EOF
 }
 
+ensure_release_keystore() {
+  local props="$ANDROID_DIR/keystore.properties"
+  local keystore="$ANDROID_DIR/keystore/tasktimer-release.jks"
+  if [[ -f "$props" ]] && [[ -f "$keystore" ]]; then
+    return
+  fi
+  if [[ ! -f "$ANDROID_DIR/keystore.properties.example" ]]; then
+    echo "Не найден android/keystore.properties — нужен для стабильной подписи APK." >&2
+    exit 1
+  fi
+  echo "==> Подготовка release keystore (один ключ для всех сборок — обновление без удаления)"
+  mkdir -p "$ANDROID_DIR/keystore"
+  cp -f "$ANDROID_DIR/keystore.properties.example" "$props"
+  keytool -genkeypair -v \
+    -keystore "$keystore" \
+    -alias tasktimer \
+    -keyalg RSA \
+    -keysize 2048 \
+    -validity 10000 \
+    -storepass tasktimer-local-release \
+    -keypass tasktimer-local-release \
+    -dname "CN=TaskTimer link B24, OU=Dev, O=TaskTimer, L=Unknown, ST=Unknown, C=RU"
+}
+
 build_apk() {
   export ANDROID_HOME="$SDK_ROOT"
   export ANDROID_SDK_ROOT="$SDK_ROOT"
@@ -98,12 +122,19 @@ build_apk() {
 
   echo "Готово:"
   ls -lh "$DIST_DIR/tasktimer-link-b24-${version}-android.apk"
+  echo ""
+  echo "Установка / обновление:"
+  echo "  adb install -r dist/tasktimer-link-b24-${version}-android.apk"
+  echo "Если Android отказывает (несовместимая подпись) — один раз удалите старую версию,"
+  echo "затем установите заново. WebDAV-настройки придётся ввести снова."
 }
 
 require_cmd java
 require_cmd curl
 require_cmd unzip
+require_cmd keytool
 ensure_jdk17
 ensure_gradle_wrapper
+ensure_release_keystore
 install_android_sdk
 build_apk

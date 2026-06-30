@@ -1,0 +1,254 @@
+package com.timerapp.linkb24.data
+
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Test
+import com.timerapp.linkb24.webdav.contentHash
+import com.timerapp.linkb24.webdav.metaRemotePath
+import com.timerapp.linkb24.webdav.newMeta
+
+class DataMergeTest {
+    @Test
+    fun mergeAppData_keeps_richer_task_by_sessions() {
+        val local = AppDataDto(
+            tasks = listOf(
+                TaskDto(
+                    id = "t1",
+                    day = "2026-06-17",
+                    title = "Local",
+                    createdAt = "2026-06-17T10:00:00+03:00",
+                    sessions = listOf(
+                        SessionDto("s1", "2026-06-17T10:00:00+03:00", "2026-06-17T10:05:00+03:00"),
+                    ),
+                ),
+            ),
+        )
+        val remote = AppDataDto(
+            tasks = listOf(
+                TaskDto(
+                    id = "t1",
+                    day = "2026-06-17",
+                    title = "Remote",
+                    createdAt = "2026-06-17T09:00:00+03:00",
+                    sessions = listOf(
+                        SessionDto("s1", "2026-06-17T10:00:00+03:00", "2026-06-17T10:05:00+03:00"),
+                        SessionDto("s2", "2026-06-17T11:00:00+03:00", "2026-06-17T11:10:00+03:00"),
+                    ),
+                ),
+            ),
+        )
+
+        val merged = mergeAppData(listOf(local, remote))
+
+        assertEquals(1, merged.tasks.size)
+        assertEquals("Remote", merged.tasks.single().title)
+        assertEquals(2, merged.tasks.single().sessions.size)
+    }
+
+    @Test
+    fun normalizeRunningTasks_keeps_latest_running_only() {
+        val data = AppDataDto(
+            tasks = listOf(
+                TaskDto(
+                    id = "old",
+                    day = "2026-06-17",
+                    title = "Old",
+                    status = TaskStatus.RUNNING,
+                    createdAt = "2026-06-17T09:00:00+03:00",
+                    sessions = listOf(SessionDto("s1", "2026-06-17T09:00:00+03:00")),
+                ),
+                TaskDto(
+                    id = "new",
+                    day = "2026-06-17",
+                    title = "New",
+                    status = TaskStatus.RUNNING,
+                    createdAt = "2026-06-17T10:00:00+03:00",
+                    sessions = listOf(SessionDto("s2", "2026-06-17T10:00:00+03:00")),
+                ),
+            ),
+        )
+
+        val normalized = normalizeRunningTasks(data)
+        val old = normalized.tasks.first { it.id == "old" }
+        val newTask = normalized.tasks.first { it.id == "new" }
+
+        assertEquals(TaskStatus.PAUSED, old.status)
+        assertEquals(TaskStatus.RUNNING, newTask.status)
+        assertFalse(old.sessions.single().endedAt.isNullOrBlank())
+    }
+
+    @Test
+    fun mergeTaskPair_unions_sessions_from_empty_local_copy() {
+        val local = TaskDto(
+            id = "t1",
+            day = "2026-06-28",
+            title = "test webdav1",
+            createdAt = "2026-06-28T21:00:00+03:00",
+            plannedDays = listOf("2026-06-28"),
+        )
+        val remote = TaskDto(
+            id = "t1",
+            day = "2026-06-28",
+            title = "test webdav1",
+            createdAt = "2026-06-28T20:00:00+03:00",
+            plannedDays = listOf("2026-06-28"),
+            sessions = listOf(
+                SessionDto(
+                    id = "s1",
+                    startedAt = "2026-06-28T20:31:00+03:00",
+                    endedAt = "2026-06-28T20:31:04+03:00",
+                ),
+            ),
+        )
+
+        val merged = mergeTaskPair(local, remote)
+
+        assertEquals(1, merged.sessions.size)
+        assertEquals(4L, taskDurationSeconds(merged))
+    }
+
+    @Test
+    fun mergeTaskPair_keepsCompletedWhenOtherCopyIsRicher() {
+        val local = TaskDto(
+            id = "t1",
+            day = "2026-06-15",
+            title = "Local",
+            status = TaskStatus.COMPLETED,
+            completedAt = "2026-06-15T12:00:00+03:00",
+            createdAt = "2026-06-15T10:00:00+03:00",
+            sessions = listOf(
+                SessionDto("s1", "2026-06-15T10:00:00+03:00", "2026-06-15T11:00:00+03:00"),
+                SessionDto("s2", "2026-06-15T11:30:00+03:00", "2026-06-15T12:00:00+03:00"),
+            ),
+        )
+        val remote = TaskDto(
+            id = "t1",
+            day = "2026-06-15",
+            title = "Remote",
+            createdAt = "2026-06-15T10:00:00+03:00",
+            sessions = listOf(
+                SessionDto("s1", "2026-06-15T10:00:00+03:00", "2026-06-15T10:30:00+03:00"),
+            ),
+        )
+
+        val merged = mergeTaskPair(local, remote)
+
+        assertEquals(TaskStatus.COMPLETED, merged.status)
+        assertEquals("2026-06-15T12:00:00+03:00", merged.completedAt)
+        assertEquals(2, merged.sessions.size)
+    }
+
+    @Test
+    fun mergeTaskPair_runningSessionOverridesCompleted() {
+        val local = TaskDto(
+            id = "t1",
+            day = "2026-06-15",
+            title = "Local",
+            status = TaskStatus.COMPLETED,
+            completedAt = "2026-06-15T12:00:00+03:00",
+            createdAt = "2026-06-15T10:00:00+03:00",
+            sessions = listOf(
+                SessionDto("s1", "2026-06-15T10:00:00+03:00", "2026-06-15T11:00:00+03:00"),
+            ),
+        )
+        val remote = TaskDto(
+            id = "t1",
+            day = "2026-06-15",
+            title = "Remote",
+            status = TaskStatus.RUNNING,
+            createdAt = "2026-06-15T10:00:00+03:00",
+            sessions = listOf(
+                SessionDto("s2", "2026-06-15T13:00:00+03:00", null),
+            ),
+        )
+
+        val merged = mergeTaskPair(local, remote)
+
+        assertEquals(TaskStatus.RUNNING, merged.status)
+        assertEquals(null, merged.completedAt)
+    }
+
+    @Test
+    fun mergeTaskPair_pausedWhenSessionsEndedAndNotCompleted() {
+        val local = TaskDto(
+            id = "t1",
+            day = "2026-06-15",
+            title = "Local",
+            createdAt = "2026-06-15T10:00:00+03:00",
+            sessions = listOf(
+                SessionDto("s1", "2026-06-15T10:00:00+03:00", "2026-06-15T11:00:00+03:00"),
+            ),
+        )
+        val remote = TaskDto(
+            id = "t1",
+            day = "2026-06-15",
+            title = "Remote",
+            createdAt = "2026-06-15T10:00:00+03:00",
+            sessions = listOf(
+                SessionDto("s2", "2026-06-15T12:00:00+03:00", "2026-06-15T12:30:00+03:00"),
+            ),
+        )
+
+        val merged = mergeTaskPair(local, remote)
+
+        assertEquals(TaskStatus.PAUSED, merged.status)
+        assertEquals(null, merged.completedAt)
+        assertEquals(2, merged.sessions.size)
+    }
+
+    @Test
+    fun normalizeRunningTasks_prefersInstantOverStringCompare() {
+        val data = AppDataDto(
+            tasks = listOf(
+                TaskDto(
+                    id = "offset_early",
+                    day = "2026-06-15",
+                    title = "Offset",
+                    status = TaskStatus.RUNNING,
+                    createdAt = "2026-06-15T08:00:00+03:00",
+                    sessions = listOf(SessionDto("s1", "2026-06-15T08:00:00+03:00")),
+                ),
+                TaskDto(
+                    id = "naive_later",
+                    day = "2026-06-15",
+                    title = "Naive",
+                    status = TaskStatus.RUNNING,
+                    createdAt = "2026-06-15T10:00:00",
+                    sessions = listOf(SessionDto("s2", "2026-06-15T10:00:00")),
+                ),
+            ),
+        )
+
+        val normalized = normalizeRunningTasks(data)
+        val winner = normalized.tasks.first { it.status == TaskStatus.RUNNING }
+        val paused = normalized.tasks.first { it.id == "offset_early" }
+
+        assertEquals("naive_later", winner.id)
+        assertEquals(TaskStatus.PAUSED, paused.status)
+    }
+}
+
+class WebDavMetaTest {
+    @Test
+    fun contentHash_is_stable() {
+        val payload = """{"tasks":[]}""".encodeToByteArray()
+        assertEquals(contentHash(payload), contentHash(payload))
+    }
+
+    @Test
+    fun metaRemotePath_replaces_json_suffix() {
+        assertEquals(
+            "tasktimer/data.sync-meta.json",
+            metaRemotePath("tasktimer/data.json"),
+        )
+    }
+
+    @Test
+    fun newMeta_contains_device_id() {
+        val payload = "{}".encodeToByteArray()
+        val meta = newMeta(payload, "device123")
+        assertEquals("device123", meta.deviceId)
+        assertEquals(contentHash(payload), meta.contentHash)
+    }
+}

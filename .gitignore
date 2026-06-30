@@ -2,11 +2,15 @@ __pycache__/
 *.pyc
 .venv/
 .localdata/
+data.json
 build/
 dist/
 android/.android-sdk/
 android/.jdk17/
 android/.gradle/
+android/.gradle-user-home/
+android/keystore/
+android/keystore.properties
 android/.kotlin/
 android/local.properties
 android/app/build/

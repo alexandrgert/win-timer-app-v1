@@ -1,28 +1,77 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from dataclasses import replace
 from pathlib import Path
 
-from ..models import Task
+from ..models import Session, Task, TaskStatus
+from .datetime_util import duration_seconds, parse_iso_datetime
 from .state import AppState
 
 
 def _session_total_seconds(task: Task) -> int:
-    total = 0
-    for session in task.sessions:
-        if not session.started_at:
-            continue
-        try:
-            start = datetime.fromisoformat(session.started_at)
-            if session.ended_at:
-                end = datetime.fromisoformat(session.ended_at)
-                total += max(0, int((end - start).total_seconds()))
-            else:
-                total += max(0, int((datetime.now() - start).total_seconds()))
-        except ValueError:
-            continue
-    return total
+    return sum(session.duration_seconds() for session in task.sessions)
+
+
+def _pick_richer_session(existing: Session, candidate: Session) -> Session:
+    if existing.ended_at and not candidate.ended_at:
+        return existing
+    if candidate.ended_at and not existing.ended_at:
+        return candidate
+    existing_seconds = duration_seconds(existing.started_at, existing.ended_at)
+    candidate_seconds = duration_seconds(candidate.started_at, candidate.ended_at)
+    if candidate_seconds != existing_seconds:
+        return candidate if candidate_seconds > existing_seconds else existing
+    return candidate
+
+
+def _latest_completed_at(*values: str | None) -> str | None:
+    present = [value for value in values if value]
+    if not present:
+        return None
+    return max(present, key=parse_iso_datetime)
+
+
+def _resolve_merged_status(
+    left: Task,
+    right: Task,
+    sessions: list[Session],
+) -> tuple[TaskStatus, str | None]:
+    if any(session.ended_at is None for session in sessions):
+        return TaskStatus.RUNNING, None
+    if left.is_completed() or right.is_completed():
+        return TaskStatus.COMPLETED, _latest_completed_at(left.completed_at, right.completed_at)
+    if sessions:
+        return TaskStatus.PAUSED, None
+    base = right if task_richer(right, left) else left
+    return base.status, None
+
+
+def merge_task_pair(left: Task, right: Task) -> Task:
+    """Объединить две копии одной задачи: union sessions по id, метаданные — от более полной."""
+    if left.id != right.id:
+        raise ValueError(f"Task id mismatch: {left.id!r} vs {right.id!r}")
+    sessions_by_id: dict[str, Session] = {}
+    for session in left.sessions + right.sessions:
+        existing = sessions_by_id.get(session.id)
+        if existing is None:
+            sessions_by_id[session.id] = session
+        else:
+            sessions_by_id[session.id] = _pick_richer_session(existing, session)
+    merged_sessions = sorted(sessions_by_id.values(), key=lambda item: item.started_at)
+    base = right if task_richer(right, left) else left
+    other = left if base is right else right
+    planned_days = list(dict.fromkeys((base.planned_days or []) + (other.planned_days or [])))
+    description = base.description or other.description
+    status, completed_at = _resolve_merged_status(left, right, merged_sessions)
+    return replace(
+        base,
+        sessions=merged_sessions,
+        planned_days=planned_days,
+        description=description,
+        status=status,
+        completed_at=completed_at,
+    )
 
 
 def task_richer(candidate: Task, current: Task) -> bool:
@@ -53,7 +102,7 @@ def pick_best_data_file(candidates: list[Path]) -> Path | None:
 
 
 def merge_states(states: list[AppState]) -> AppState:
-    """Объединить несколько состояний: задачи по id, ui из «самого полного» файла."""
+    """Объединить несколько состояний: задачи по id с union sessions, ui из «самого полного» файла."""
     if not states:
         return AppState()
     ranked = sorted(
@@ -66,8 +115,10 @@ def merge_states(states: list[AppState]) -> AppState:
     for state in states:
         for task in state.tasks:
             existing = tasks_by_id.get(task.id)
-            if existing is None or task_richer(task, existing):
+            if existing is None:
                 tasks_by_id[task.id] = task
+            else:
+                tasks_by_id[task.id] = merge_task_pair(existing, task)
     return AppState(tasks=list(tasks_by_id.values()), ui=merged_ui)
 
 

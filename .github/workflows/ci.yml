@@ -135,6 +135,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Verify Android version matches pyproject.toml
+        run: python scripts/check_version_sync.py
+
       - name: Build Android APK
         run: |
           chmod +x build_apk.sh

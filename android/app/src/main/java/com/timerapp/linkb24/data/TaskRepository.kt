@@ -32,7 +32,7 @@ fun parseInstant(value: String): Instant? {
 }
 
 class TaskRepository(
-    private val dataFile: File,
+    val dataFile: File,
 ) {
     constructor(context: Context) : this(File(context.filesDir, "data.json"))
 
@@ -106,6 +106,19 @@ class TaskRepository(
             } else {
                 val paused = pauseRunningTask(task)
                 paused.copy(status = TaskStatus.COMPLETED, completedAt = now)
+            }
+        }
+        return data.copy(tasks = tasks)
+    }
+
+    fun resumeCompletedTask(taskId: String, data: AppDataDto): AppDataDto {
+        val pausedOthers = data.copy(tasks = data.tasks.map { pauseRunningTask(it) })
+        val tasks = pausedOthers.tasks.map { task ->
+            if (task.id != taskId) {
+                task
+            } else {
+                val reopened = task.copy(status = TaskStatus.OPEN, completedAt = null)
+                startTask(reopened)
             }
         }
         return data.copy(tasks = tasks)

@@ -4,16 +4,19 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 from urllib.parse import urljoin
 from uuid import uuid4
 
 from . import platform_paths
+from .domain.datetime_util import local_now, parse_iso_datetime
 from .secure_files import write_json_secrets
 from .webdav_meta import META_SUFFIX
 
 DEFAULT_REMOTE_PATH = "tasktimer/data.json"
+REMIND_LATER_MINUTES_CHOICES = (5, 10, 15, 30, 60)
+DEFAULT_REMIND_LATER_MINUTES = 15
 
 
 @dataclass
@@ -26,12 +29,16 @@ class WebDavConfig:
     sync_on_startup: bool = True
     sync_on_shutdown: bool = True
     shutdown_upload_only: bool = False
+    sync_interval_minutes: int = 0
+    sync_remind_later_minutes: int = DEFAULT_REMIND_LATER_MINUTES
     last_sync_at: str | None = None
     last_error: str = ""
     device_id: str = ""
     last_remote_content_hash: str = ""
     last_sync_had_conflict: bool = False
     pending_notice: str = ""
+    pending_remote_hash: str = ""
+    pending_remote_remind_at: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -43,12 +50,16 @@ class WebDavConfig:
             "sync_on_startup": self.sync_on_startup,
             "sync_on_shutdown": self.sync_on_shutdown,
             "shutdown_upload_only": self.shutdown_upload_only,
+            "sync_interval_minutes": self.sync_interval_minutes,
+            "sync_remind_later_minutes": self.sync_remind_later_minutes,
             "last_sync_at": self.last_sync_at,
             "last_error": self.last_error,
             "device_id": self.device_id,
             "last_remote_content_hash": self.last_remote_content_hash,
             "last_sync_had_conflict": self.last_sync_had_conflict,
             "pending_notice": self.pending_notice,
+            "pending_remote_hash": self.pending_remote_hash,
+            "pending_remote_remind_at": self.pending_remote_remind_at,
         }
 
     @classmethod
@@ -64,12 +75,18 @@ class WebDavConfig:
             sync_on_startup=bool(data.get("sync_on_startup", True)),
             sync_on_shutdown=bool(data.get("sync_on_shutdown", True)),
             shutdown_upload_only=bool(data.get("shutdown_upload_only", False)),
+            sync_interval_minutes=max(0, int(data.get("sync_interval_minutes") or 0)),
+            sync_remind_later_minutes=normalize_remind_later_minutes(
+                int(data.get("sync_remind_later_minutes") or DEFAULT_REMIND_LATER_MINUTES)
+            ),
             last_sync_at=data.get("last_sync_at"),
             last_error=str(data.get("last_error", "") or ""),
             device_id=str(data.get("device_id") or "").strip(),
             last_remote_content_hash=str(data.get("last_remote_content_hash") or "").strip(),
             last_sync_had_conflict=bool(data.get("last_sync_had_conflict", False)),
             pending_notice=str(data.get("pending_notice") or "").strip(),
+            pending_remote_hash=str(data.get("pending_remote_hash") or "").strip(),
+            pending_remote_remind_at=data.get("pending_remote_remind_at"),
         )
 
     def is_configured(self) -> bool:
@@ -92,6 +109,53 @@ class WebDavConfig:
         if not self.device_id:
             self.device_id = uuid4().hex
         return self.device_id
+
+
+def normalize_remind_later_minutes(value: int) -> int:
+    if value in REMIND_LATER_MINUTES_CHOICES:
+        return value
+    return DEFAULT_REMIND_LATER_MINUTES
+
+
+def should_show_remote_prompt(config: WebDavConfig, remote_hash: str) -> bool:
+    """Показывать ли запрос на pull для данного hash (учитывает «Позже» и таймер повтора)."""
+    pending = (config.pending_remote_hash or "").strip()
+    if not pending or pending != remote_hash:
+        return True
+    remind_at_raw = (config.pending_remote_remind_at or "").strip()
+    if not remind_at_raw:
+        return True
+    try:
+        remind_at = parse_iso_datetime(remind_at_raw)
+    except ValueError:
+        return True
+    return local_now() >= remind_at
+
+
+def clear_pending_remote_remind(config: WebDavConfig) -> WebDavConfig:
+    updated = WebDavConfig.from_dict(config.to_dict())
+    updated.pending_remote_hash = ""
+    updated.pending_remote_remind_at = None
+    save_webdav_config(updated)
+    return updated
+
+
+def save_pending_remote_remind(config: WebDavConfig, remote_hash: str) -> WebDavConfig:
+    minutes = normalize_remind_later_minutes(config.sync_remind_later_minutes)
+    remind_at = local_now() + timedelta(minutes=minutes)
+    updated = WebDavConfig.from_dict(config.to_dict())
+    updated.pending_remote_hash = remote_hash.strip()
+    updated.pending_remote_remind_at = remind_at.isoformat(timespec="seconds")
+    save_webdav_config(updated)
+    return updated
+
+
+def prepare_remote_prompt(config: WebDavConfig, remote_hash: str) -> WebDavConfig:
+    """Сбросить «Позже», если на сервере появилась новая версия."""
+    pending = (config.pending_remote_hash or "").strip()
+    if pending and pending != remote_hash.strip():
+        return clear_pending_remote_remind(config)
+    return config
 
 
 def webdav_config_path():
@@ -120,12 +184,16 @@ def apply_env_defaults(config: WebDavConfig, *, respect_saved_enabled: bool = Fa
         sync_on_startup=config.sync_on_startup,
         sync_on_shutdown=config.sync_on_shutdown,
         shutdown_upload_only=config.shutdown_upload_only,
+        sync_interval_minutes=config.sync_interval_minutes,
+        sync_remind_later_minutes=config.sync_remind_later_minutes,
         last_sync_at=config.last_sync_at,
         last_error=config.last_error,
         device_id=config.device_id,
         last_remote_content_hash=config.last_remote_content_hash,
         last_sync_had_conflict=config.last_sync_had_conflict,
         pending_notice=config.pending_notice,
+        pending_remote_hash=config.pending_remote_hash,
+        pending_remote_remind_at=config.pending_remote_remind_at,
     )
 
 

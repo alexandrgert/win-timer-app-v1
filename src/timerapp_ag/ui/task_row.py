@@ -3,12 +3,13 @@ from __future__ import annotations
 from datetime import datetime
 
 from PySide6.QtCore import QEasingCurve, Qt, QPropertyAnimation, QUrl, Signal
-from PySide6.QtGui import QDesktopServices, QMouseEvent
+from PySide6.QtGui import QDesktopServices, QFontMetrics, QMouseEvent
 from PySide6.QtWidgets import (
     QFrame,
     QGraphicsOpacityEffect,
     QHBoxLayout,
     QLabel,
+    QLayout,
     QPushButton,
     QSizePolicy,
     QVBoxLayout,
@@ -16,6 +17,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..controller import AppController, format_day_label, format_hm
+from ..domain.formatting import TASK_DATETIME_SAMPLE, format_task_datetime
 from ..models import Task, TaskStatus
 from .bitrix_links import bitrix_entity_url
 from .icons import draw_stopwatch, draw_trash, line_icon
@@ -34,6 +36,21 @@ _STATUS_PROP = {
     TaskStatus.COMPLETED: "done",
     TaskStatus.OPEN: "todo",
 }
+
+_META_FIELD_HPAD = 6
+
+
+def _meta_datetime_field_width(font) -> int:
+    metrics = QFontMetrics(font)
+    return metrics.horizontalAdvance(TASK_DATETIME_SAMPLE) + _META_FIELD_HPAD * 2
+
+
+def _make_meta_value_label(text: str) -> QLabel:
+    label = QLabel(text)
+    label.setObjectName("taskRowMetaVal")
+    label.setFixedWidth(_meta_datetime_field_width(label.font()))
+    label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    return label
 
 
 class TaskRow(QFrame):
@@ -58,6 +75,7 @@ class TaskRow(QFrame):
         self._task_id = task.id
         self._title = task.title
         self._description = task.description.strip()
+        self._is_completed = task.status == TaskStatus.COMPLETED
         self._pinned = False
         self._is_running = task.status == TaskStatus.RUNNING
         status = _STATUS_PROP.get(task.status, "todo")
@@ -88,6 +106,28 @@ class TaskRow(QFrame):
         self._name_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Minimum)
         layout.addWidget(self._name_label, 1)
 
+        self._meta_box = QWidget()
+        self._meta_box.setObjectName("taskRowMetaBox")
+        meta_row = QHBoxLayout(self._meta_box)
+        meta_row.setContentsMargins(0, 0, 0, 0)
+        meta_row.setSpacing(6)
+        created_caption = QLabel("Создана")
+        created_caption.setObjectName("taskRowMetaLbl")
+        meta_row.addWidget(created_caption)
+        meta_row.addWidget(_make_meta_value_label(format_task_datetime(task.created_at)))
+        completed_caption = QLabel("Завершена")
+        completed_caption.setObjectName("taskRowMetaLbl")
+        meta_row.addSpacing(6)
+        meta_row.addWidget(completed_caption)
+        completed_text = format_task_datetime(task.completed_at) if self._is_completed else "—"
+        completed_value = _make_meta_value_label(completed_text)
+        if not self._is_completed:
+            completed_value.setProperty("empty", True)
+            completed_value.style().unpolish(completed_value)
+            completed_value.style().polish(completed_value)
+        meta_row.addWidget(completed_value)
+        self._meta_box.hide()
+
         reference = reference_date or controller.today_str()
         is_today = reference == controller.today_str()
         self._times_box = QWidget()
@@ -112,7 +152,20 @@ class TaskRow(QFrame):
         total_value.setObjectName("rowTimeVal")
         self._total_value = total_value
         times.addWidget(total_value)
-        layout.addWidget(self._times_box)
+
+        self._stats_wrap_vertical = False
+        self._stats_cluster = QWidget()
+        self._stats_cluster_layout = QVBoxLayout(self._stats_cluster)
+        self._stats_cluster_layout.setContentsMargins(0, 0, 0, 0)
+        self._stats_cluster_layout.setSpacing(2)
+        self._stats_row_wrap = QWidget()
+        self._stats_row_h = QHBoxLayout(self._stats_row_wrap)
+        self._stats_row_h.setContentsMargins(0, 0, 0, 0)
+        self._stats_row_h.setSpacing(6)
+        self._stats_row_h.addWidget(self._meta_box)
+        self._stats_row_h.addWidget(self._times_box)
+        self._stats_cluster_layout.addWidget(self._stats_row_wrap)
+        layout.addWidget(self._stats_cluster)
 
         self._actions = QWidget()
         self._actions.setObjectName("rowActions")
@@ -257,6 +310,71 @@ class TaskRow(QFrame):
             ancestor = ancestor.parentWidget()
         return max(self.width(), 200)
 
+    @staticmethod
+    def _clear_layout(layout: QLayout) -> None:
+        while layout.count():
+            item = layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+
+    def _stats_cluster_available_width(self) -> int:
+        margins = 25
+        dot_block = 18
+        if self._pinned:
+            name_block = TASK_ROW_NAME_MIN_WIDTH
+        else:
+            name_block = max(self._name_label.width(), self._name_label.sizeHint().width())
+        return max(
+            self._content_max_width() - margins - dot_block - name_block - 10,
+            120,
+        )
+
+    def _meta_block_width(self) -> int:
+        width = self._meta_box.sizeHint().width()
+        if width > 0:
+            return width
+        font = self._meta_box.font()
+        metrics = QFontMetrics(font)
+        captions = metrics.horizontalAdvance("Создана") + metrics.horizontalAdvance("Завершена")
+        fields = _meta_datetime_field_width(font) * 2
+        return captions + fields + 6 * 4
+
+    def _relayout_stats_cluster(self) -> None:
+        if not self._pinned:
+            if self._stats_wrap_vertical:
+                self._set_stats_layout(vertical=False)
+            return
+        if not self._meta_box.isVisible():
+            return
+
+        meta_w = self._meta_block_width()
+        times_w = self._times_box.sizeHint().width()
+        need_horizontal = meta_w + 6 + times_w
+        vertical = need_horizontal > self._stats_cluster_available_width()
+        self._set_stats_layout(vertical=vertical)
+
+    def _set_stats_layout(self, *, vertical: bool) -> None:
+        if vertical == self._stats_wrap_vertical:
+            return
+        self._stats_wrap_vertical = vertical
+        self._clear_layout(self._stats_cluster_layout)
+        self._clear_layout(self._stats_row_h)
+        self._meta_box.setParent(self._stats_cluster)
+        self._times_box.setParent(self._stats_cluster)
+        if vertical:
+            self._stats_cluster_layout.addWidget(
+                self._meta_box, 0, Qt.AlignmentFlag.AlignRight
+            )
+            self._stats_cluster_layout.addWidget(
+                self._times_box, 0, Qt.AlignmentFlag.AlignRight
+            )
+        else:
+            self._stats_row_h.addWidget(self._meta_box)
+            self._stats_row_h.addWidget(self._times_box)
+            self._stats_cluster_layout.addWidget(self._stats_row_wrap)
+        self._stats_cluster.updateGeometry()
+
     def _apply_row_width_constraint(self) -> None:
         max_width = self._content_max_width()
         if max_width > 0:
@@ -264,22 +382,37 @@ class TaskRow(QFrame):
 
     def refresh_layout(self) -> None:
         self._apply_row_width_constraint()
+        if self._pinned:
+            self._relayout_stats_cluster()
         self._fit_header_layout()
         self._fit_description_layout()
         if self._pinned:
+            self._relayout_stats_cluster()
             self._update_pinned_row_height()
 
     def _title_area_width(self) -> int:
         margins = 25
         dot_block = 18
         times_block = self._times_box.sizeHint().width() + 10
+        if self._meta_box.isVisible():
+            meta_block = self._meta_block_width()
+            if self._stats_wrap_vertical:
+                stats_block = max(meta_block, times_block - 10) + 10
+            else:
+                stats_block = meta_block + times_block
+        else:
+            stats_block = times_block
         actions_block = (
             0
             if self._pinned
             else TASK_ROW_ACTIONS_OVERLAY_RESERVE
         )
         return max(
-            self._content_max_width() - margins - dot_block - times_block - actions_block,
+            self._content_max_width()
+            - margins
+            - dot_block
+            - stats_block
+            - actions_block,
             TASK_ROW_NAME_MIN_WIDTH,
         )
 
@@ -364,7 +497,9 @@ class TaskRow(QFrame):
             else 0
         )
         self.setFixedHeight(
-            self._header.height() + self._desc_wrap.sizeHint().height() + footer_height
+            self._header.height()
+            + self._desc_wrap.sizeHint().height()
+            + footer_height
         )
 
     def set_pinned(self, pinned: bool) -> None:
@@ -375,6 +510,7 @@ class TaskRow(QFrame):
         show = self._pinned
         self._relayout_actions_for_pinned(show)
         if show:
+            self._meta_box.show()
             if self._description:
                 self._desc_label.setText(break_long_unbroken_runs(self._description))
                 self._desc_label.setProperty("empty", False)
@@ -388,6 +524,7 @@ class TaskRow(QFrame):
             self.setMaximumHeight(16777215)
             self.refresh_layout()
         else:
+            self._meta_box.hide()
             self._desc_wrap.hide()
             self._fit_header_layout()
             self.setFixedHeight(48)

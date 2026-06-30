@@ -6,6 +6,8 @@ from enum import Enum
 from typing import Any
 from uuid import uuid4
 
+from .domain.datetime_util import duration_seconds, parse_iso_datetime
+
 
 class TaskStatus(str, Enum):
     OPEN = "open"
@@ -28,15 +30,14 @@ class Session:
 
     @property
     def start_dt(self) -> datetime:
-        return datetime.fromisoformat(self.started_at)
+        return parse_iso_datetime(self.started_at)
 
     @property
     def end_dt(self) -> datetime | None:
-        return datetime.fromisoformat(self.ended_at) if self.ended_at else None
+        return parse_iso_datetime(self.ended_at) if self.ended_at else None
 
     def duration_seconds(self, now: datetime | None = None) -> int:
-        end = self.end_dt or now or datetime.now()
-        return max(0, int((end - self.start_dt).total_seconds()))
+        return duration_seconds(self.started_at, self.ended_at, now=now)
 
     def to_dict(self) -> dict[str, Any]:
         return {

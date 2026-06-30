@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>WebDAV — TaskTimer Android</title>
+  <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500&display=swap" rel="stylesheet" />
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: Roboto, system-ui, sans-serif;
+      background: #1a1a1a;
+      display: flex;
+      justify-content: center;
+      padding: 24px;
+    }
+    .phone {
+      width: 412px;
+      min-height: 892px;
+      background: #fef7ff;
+      border-radius: 28px;
+      overflow: hidden;
+      box-shadow: 0 12px 48px rgba(0,0,0,.45);
+      border: 8px solid #222;
+    }
+    .status-bar {
+      height: 28px;
+      background: #fef7ff;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 20px;
+      font-size: 12px;
+      color: #1d1b20;
+    }
+    .top-bar {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      padding: 8px 4px 8px 8px;
+      background: #fef7ff;
+      border-bottom: 1px solid #e7e0ec;
+    }
+    .top-bar button {
+      border: none;
+      background: none;
+      font-size: 22px;
+      width: 48px;
+      height: 48px;
+      color: #49454f;
+    }
+    .top-bar h1 {
+      font-size: 22px;
+      font-weight: 400;
+      color: #1d1b20;
+      flex: 1;
+    }
+    .content {
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .hint {
+      font-size: 14px;
+      line-height: 1.4;
+      color: #49454f;
+    }
+    .checkbox-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 14px;
+      color: #1d1b20;
+    }
+    .checkbox-row input { width: 18px; height: 18px; accent-color: #6750a4; }
+    .field {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .field label {
+      font-size: 12px;
+      color: #6750a4;
+      padding-left: 16px;
+    }
+    .field input {
+      border: 1px solid #79747e;
+      border-radius: 4px;
+      padding: 16px;
+      font-size: 16px;
+      background: #fff;
+      color: #1d1b20;
+    }
+    .field .placeholder { color: #79747e; }
+    .small-hint {
+      font-size: 12px;
+      color: #49454f;
+      line-height: 1.35;
+    }
+    .btn-row {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .btn {
+      background: #e8def8;
+      color: #1d192b;
+      border: none;
+      border-radius: 20px;
+      padding: 10px 16px;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: default;
+      flex: 1;
+      min-width: 0;
+      text-align: center;
+    }
+    .status-ok {
+      font-size: 13px;
+      color: #1d1b20;
+      line-height: 1.4;
+    }
+    .status-primary {
+      font-size: 13px;
+      color: #6750a4;
+    }
+  </style>
+</head>
+<body>
+  <div class="phone" id="screen">
+    <div class="status-bar"><span>12:30</span><span>▮▮▮ Wi‑Fi</span></div>
+    <header class="top-bar">
+      <button aria-label="Назад">←</button>
+      <h1>WebDAV</h1>
+    </header>
+    <main class="content">
+      <p class="hint">Синхронизация data.json по WebDAV (Nextcloud, Яндекс.Диск и др.). Пароль хранится локально в webdav.json на устройстве и не попадает в облако.</p>
+
+      <label class="checkbox-row"><input type="checkbox" checked /> Включить синхронизацию WebDAV</label>
+
+      <div class="field">
+        <label>URL WebDAV</label>
+        <input type="text" value="https://cloud.example.com/remote.php/dav/files/user/" />
+      </div>
+      <div class="field">
+        <label>Имя пользователя</label>
+        <input type="text" value="alex" />
+      </div>
+      <div class="field">
+        <label>Пароль</label>
+        <input type="password" value="••••••••" />
+      </div>
+      <div class="field">
+        <label>Путь к файлу на сервере</label>
+        <input type="text" value="tasktimer/data.json" />
+      </div>
+
+      <label class="checkbox-row"><input type="checkbox" checked /> Скачивать и объединять при запуске</label>
+      <label class="checkbox-row"><input type="checkbox" checked /> Загружать на сервер при выходе</label>
+      <label class="checkbox-row"><input type="checkbox" /> При выходе только отправить локальную копию (без слияния)</label>
+
+      <p class="small-hint">Если выключено — перед отправкой при выходе данные объединяются с сервером.</p>
+
+      <div class="btn-row">
+        <button class="btn">Проверить WebDAV</button>
+        <button class="btn">Сохранить</button>
+      </div>
+      <div class="btn-row">
+        <button class="btn">Скачать и объединить</button>
+        <button class="btn">Загрузить сейчас</button>
+      </div>
+
+      <p class="status-ok">Подключение успешно (удалённый файл найден)</p>
+      <p class="status-primary">Настройки сохранены</p>
+    </main>
+  </div>
+</body>
+</html>

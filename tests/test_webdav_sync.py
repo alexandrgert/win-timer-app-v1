@@ -13,11 +13,14 @@ from timerapp_ag.storage import Storage
 from timerapp_ag.webdav_client import WebDavClient, WebDavError
 from timerapp_ag.webdav_config import WebDavConfig, consume_webdav_pending_notice, load_webdav_config, save_webdav_config
 from timerapp_ag.webdav_sync import (
+    RemoteCheckOutcome,
     _remote_payload_hash,
     _upload_payload,
+    check_remote_changes,
     pull_and_merge,
     push_local,
     push_local_upload_only,
+    sync_webdav_now,
     sync_webdav_on_shutdown,
 )
 from timerapp_ag.webdav_meta import RemoteSyncMeta, content_hash, new_meta
@@ -355,3 +358,103 @@ def test_sync_webdav_on_shutdown_upload_only_persists_conflict_notice(
     notice = peek_webdav_pending_notice()
     assert notice
     assert "локальная копия" in notice.lower()
+
+
+def test_sync_webdav_now_pulls_then_pushes(tmp_path: Path, webdav_config: WebDavConfig) -> None:
+    storage = Storage(path=tmp_path / "data.json", migrate_legacy=False)
+    storage.path.write_text(
+        json.dumps({"tasks": [{"id": "l1", "day": "2026-06-15", "title": "Local", "status": "open", "sessions": []}], "ui": {}}),
+        encoding="utf-8",
+    )
+    remote_payload = json.dumps(
+        {"tasks": [{"id": "r1", "day": "2026-06-15", "title": "Remote", "status": "open", "sessions": []}], "ui": {}},
+    ).encode("utf-8")
+    calls: list[str] = []
+
+    def fake_urlopen(request, timeout=0):
+        method = request.get_method()
+        calls.append(method)
+        response = MagicMock()
+        response.status = 204 if method in {"PUT", "MKCOL"} else 200
+        response.read.return_value = remote_payload if method == "GET" else b""
+        response.headers.items.return_value = []
+        response.__enter__ = lambda self: response
+        response.__exit__ = lambda *args: None
+        return response
+
+    with patch("timerapp_ag.webdav_client.urllib.request.urlopen", side_effect=fake_urlopen):
+        with patch.object(WebDavClient, "exists", return_value=True):
+            with patch("timerapp_ag.webdav_sync.mark_webdav_sync_ok"):
+                outcome = sync_webdav_now(storage, webdav_config, require_enabled=False)
+
+    assert outcome.error == ""
+    assert outcome.state is not None
+    assert "GET" in calls
+    assert "PUT" in calls
+    assert calls.count("GET") == 2  # pull: data.json + sync-meta; push_merged без повторного download
+
+
+def test_check_remote_changes_detects_stale_hash(
+    tmp_path: Path,
+    webdav_config: WebDavConfig,
+) -> None:
+    storage = Storage(path=tmp_path / "data.json", migrate_legacy=False)
+    storage.path.write_text(json.dumps({"tasks": [], "ui": {}}), encoding="utf-8")
+    config = WebDavConfig.from_dict(webdav_config.to_dict())
+    config.last_remote_content_hash = "stale-hash"
+    remote_payload = json.dumps({"tasks": [{"id": "remote", "day": "2026-06-15", "title": "X"}], "ui": {}}).encode(
+        "utf-8"
+    )
+    remote_hash = content_hash(remote_payload)
+
+    with patch.object(WebDavClient, "exists", return_value=True):
+        with patch.object(WebDavClient, "download", return_value=remote_payload):
+            with patch("timerapp_ag.webdav_sync._read_remote_meta", return_value=None):
+                outcome = check_remote_changes(storage, config, require_enabled=False)
+
+    assert isinstance(outcome, RemoteCheckOutcome)
+    assert outcome.remote_changed is True
+    assert outcome.remote_hash == remote_hash
+
+
+def test_check_remote_changes_unchanged_when_hash_matches(
+    tmp_path: Path,
+    webdav_config: WebDavConfig,
+) -> None:
+    storage = Storage(path=tmp_path / "data.json", migrate_legacy=False)
+    payload = json.dumps({"tasks": [], "ui": {}}).encode("utf-8")
+    storage.path.write_bytes(payload)
+    config = WebDavConfig.from_dict(webdav_config.to_dict())
+    config.last_remote_content_hash = content_hash(payload)
+    meta = new_meta(payload, "device-a")
+
+    with patch.object(WebDavClient, "exists", return_value=True):
+        with patch.object(WebDavClient, "download", return_value=payload):
+            with patch("timerapp_ag.webdav_sync._read_remote_meta", return_value=meta):
+                outcome = check_remote_changes(storage, config, require_enabled=False)
+
+    assert outcome.remote_changed is False
+    assert outcome.remote_hash == meta.content_hash
+
+
+def test_check_remote_changes_detects_change_when_meta_stale(
+    tmp_path: Path,
+    webdav_config: WebDavConfig,
+) -> None:
+    storage = Storage(path=tmp_path / "data.json", migrate_legacy=False)
+    storage.path.write_text(json.dumps({"tasks": [], "ui": {}}), encoding="utf-8")
+    remote_payload = json.dumps(
+        {"tasks": [{"id": "remote", "day": "2026-06-15", "title": "X"}], "ui": {}},
+    ).encode("utf-8")
+    remote_hash = content_hash(remote_payload)
+    config = WebDavConfig.from_dict(webdav_config.to_dict())
+    config.last_remote_content_hash = "stale-hash"
+    stale_meta = new_meta(b"{}", "device-a")
+
+    with patch.object(WebDavClient, "exists", return_value=True):
+        with patch.object(WebDavClient, "download", return_value=remote_payload):
+            with patch("timerapp_ag.webdav_sync._read_remote_meta", return_value=stale_meta):
+                outcome = check_remote_changes(storage, config, require_enabled=False)
+
+    assert outcome.remote_changed is True
+    assert outcome.remote_hash == remote_hash

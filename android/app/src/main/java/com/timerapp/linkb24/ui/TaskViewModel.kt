@@ -4,12 +4,19 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.timerapp.linkb24.data.AppDataDto
+import com.timerapp.linkb24.data.TaskViewFilter
 import com.timerapp.linkb24.data.TaskDto
 import com.timerapp.linkb24.data.TaskRepository
-import com.timerapp.linkb24.data.TaskStatus
+import com.timerapp.linkb24.data.WebDavConfigRepository
+import com.timerapp.linkb24.data.filterTasks
 import com.timerapp.linkb24.data.formatDuration
 import com.timerapp.linkb24.data.isActive
 import com.timerapp.linkb24.data.taskDurationSeconds
+import com.timerapp.linkb24.webdav.WebDavNotificationHelper
+import com.timerapp.linkb24.webdav.WebDavPromptBus
+import com.timerapp.linkb24.webdav.WebDavSync
+import com.timerapp.linkb24.webdav.clearPendingRemoteRemind
+import com.timerapp.linkb24.webdav.withPendingRemoteRemind
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -22,13 +29,24 @@ import kotlinx.coroutines.withContext
 
 data class TaskListUiState(
     val tasks: List<TaskDto> = emptyList(),
+    val taskFilter: TaskViewFilter = TaskViewFilter.TODAY,
     val tickMillis: Long = System.currentTimeMillis(),
     val newTaskTitle: String = "",
     val errorMessage: String? = null,
+    val syncNotice: String? = null,
+    val isWebDavSyncing: Boolean = false,
+    val isLoading: Boolean = true,
+    val remoteChangePrompt: RemoteChangePrompt? = null,
+)
+
+data class RemoteChangePrompt(
+    val remoteHash: String,
 )
 
 class TaskViewModel(application: Application) : AndroidViewModel(application) {
     private val repository = TaskRepository(application)
+    private val webDavSync = WebDavSync(repository, WebDavConfigRepository(application))
+    private val configRepository = WebDavConfigRepository(application)
     private var appData: AppDataDto = AppDataDto()
 
     private val _uiState = MutableStateFlow(TaskListUiState())
@@ -36,18 +54,60 @@ class TaskViewModel(application: Application) : AndroidViewModel(application) {
 
     init {
         viewModelScope.launch {
+            WebDavPromptBus.pending.collect { prompt ->
+                if (prompt != null && _uiState.value.remoteChangePrompt == null) {
+                    _uiState.update { it.copy(remoteChangePrompt = prompt) }
+                }
+            }
+        }
+
+        viewModelScope.launch {
+            val notices = mutableListOf<String>()
             runCatching {
-                appData = withContext(Dispatchers.IO) { repository.load() }
-            }.onSuccess {
-                _uiState.update { state ->
-                    state.copy(tasks = visibleTasks(appData), errorMessage = null)
+                withContext(Dispatchers.IO) {
+                    webDavSync.syncOnStartup()
+                }
+            }.onSuccess { outcome ->
+                if (outcome.error.isNotBlank()) {
+                    notices += outcome.error
+                }
+                if (outcome.notice.isNotBlank()) {
+                    notices += outcome.notice
                 }
             }.onFailure { error ->
-                _uiState.update { it.copy(errorMessage = error.message) }
+                notices += error.message ?: "Ошибка синхронизации WebDAV"
             }
+
+            val pending = withContext(Dispatchers.IO) { configRepository.consumePendingNotice() }
+            if (pending.isNotBlank()) {
+                notices += pending
+            }
+
+            runCatching {
+                withContext(Dispatchers.IO) { repository.load() }
+            }.onSuccess { loaded ->
+                appData = loaded
+                _uiState.update {
+                    it.copy(
+                        tasks = visibleTasks(appData),
+                        errorMessage = null,
+                        syncNotice = notices.joinToString("\n").ifBlank { null },
+                        isLoading = false,
+                    )
+                }
+            }.onFailure { error ->
+                _uiState.update {
+                    it.copy(
+                        errorMessage = error.message,
+                        syncNotice = notices.joinToString("\n").ifBlank { null },
+                        isLoading = false,
+                    )
+                }
+            }
+
             while (isActive) {
                 delay(1_000)
-                if (_uiState.value.tasks.any(::isActive)) {
+                if (appData.tasks.any(::isActive)) {
                     _uiState.update { it.copy(tickMillis = System.currentTimeMillis()) }
                 }
             }
@@ -56,6 +116,12 @@ class TaskViewModel(application: Application) : AndroidViewModel(application) {
 
     fun onNewTaskTitleChange(value: String) {
         _uiState.update { it.copy(newTaskTitle = value, errorMessage = null) }
+    }
+
+    fun onFilterChange(filter: TaskViewFilter) {
+        _uiState.update {
+            it.copy(taskFilter = filter, tasks = filterTasks(appData, filter))
+        }
     }
 
     fun addTask() {
@@ -90,6 +156,12 @@ class TaskViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun resumeTask(taskId: String) {
+        mutateTasks("Не удалось возобновить задачу") {
+            repository.resumeCompletedTask(taskId, appData)
+        }
+    }
+
     fun deleteTask(taskId: String) {
         mutateTasks("Не удалось удалить задачу") {
             repository.deleteTask(taskId, appData)
@@ -98,6 +170,113 @@ class TaskViewModel(application: Application) : AndroidViewModel(application) {
 
     fun durationLabel(task: TaskDto): String {
         return formatDuration(taskDurationSeconds(task, _uiState.value.tickMillis))
+    }
+
+    fun pullWebDav() {
+        if (_uiState.value.isWebDavSyncing) {
+            return
+        }
+        val config = configRepository.load()
+        if (!config.isConfigured()) {
+            _uiState.update { it.copy(syncNotice = "WebDAV не настроен: укажите URL и имя пользователя") }
+            return
+        }
+        viewModelScope.launch {
+            val outcome = runWebDavSync { webDavSync.pullAndMerge(config, requireEnabled = false) }
+            applySyncOutcome(outcome)
+        }
+    }
+
+    fun pushWebDav() {
+        if (_uiState.value.isWebDavSyncing) {
+            return
+        }
+        val config = configRepository.load()
+        if (!config.isConfigured()) {
+            _uiState.update { it.copy(syncNotice = "WebDAV не настроен: укажите URL и имя пользователя") }
+            return
+        }
+        viewModelScope.launch {
+            val outcome = runWebDavSync { webDavSync.pushLocal(config, requireEnabled = false) }
+            applySyncOutcome(outcome)
+        }
+    }
+
+    fun confirmRemotePull() {
+        if (_uiState.value.isWebDavSyncing) {
+            return
+        }
+        WebDavPromptBus.clear()
+        WebDavNotificationHelper.cancel(getApplication())
+        _uiState.update { it.copy(remoteChangePrompt = null) }
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                val config = configRepository.load().clearPendingRemoteRemind()
+                configRepository.save(config)
+            }
+            val outcome = runWebDavSync { webDavSync.pullAndMerge(requireEnabled = false) }
+            applySyncOutcome(outcome)
+        }
+    }
+
+    fun dismissRemotePull() {
+        val remoteHash = _uiState.value.remoteChangePrompt?.remoteHash.orEmpty()
+        WebDavPromptBus.clear()
+        WebDavNotificationHelper.cancel(getApplication())
+        _uiState.update { it.copy(remoteChangePrompt = null) }
+        if (remoteHash.isBlank()) {
+            return
+        }
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                val config = configRepository.load().withPendingRemoteRemind(remoteHash)
+                configRepository.save(config)
+            }
+        }
+    }
+
+    fun reloadFromStorage() {
+        viewModelScope.launch {
+            runCatching {
+                withContext(Dispatchers.IO) { repository.load() }
+            }.onSuccess { loaded ->
+                appData = loaded
+                _uiState.update {
+                    it.copy(tasks = visibleTasks(appData), errorMessage = null)
+                }
+            }
+        }
+    }
+
+    private suspend fun runWebDavSync(
+        block: suspend () -> com.timerapp.linkb24.webdav.SyncOutcome,
+    ): com.timerapp.linkb24.webdav.SyncOutcome {
+        _uiState.update { it.copy(isWebDavSyncing = true, syncNotice = null, errorMessage = null) }
+        return runCatching {
+            withContext(Dispatchers.IO) { block() }
+        }.getOrElse { error ->
+            com.timerapp.linkb24.webdav.SyncOutcome(error = error.message ?: "Ошибка WebDAV")
+        }
+    }
+
+    private suspend fun applySyncOutcome(outcome: com.timerapp.linkb24.webdav.SyncOutcome) {
+        if (outcome.data != null) {
+            appData = outcome.data
+        } else {
+            runCatching {
+                withContext(Dispatchers.IO) { repository.load() }
+            }.onSuccess { loaded ->
+                appData = loaded
+            }
+        }
+        _uiState.update {
+            it.copy(
+                tasks = visibleTasks(appData),
+                isWebDavSyncing = false,
+                syncNotice = outcome.notice.ifBlank { outcome.error.ifBlank { null } },
+                errorMessage = outcome.error.ifBlank { null },
+            )
+        }
     }
 
     private fun mutateTasks(errorPrefix: String, transform: (AppDataDto) -> AppDataDto) {
@@ -127,9 +306,7 @@ class TaskViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun visibleTasks(data: AppDataDto): List<TaskDto> {
-        return data.tasks
-            .filter { it.status != TaskStatus.COMPLETED }
-            .sortedByDescending { it.createdAt }
+    private fun visibleTasks(data: AppDataDto, filter: TaskViewFilter = _uiState.value.taskFilter): List<TaskDto> {
+        return filterTasks(data, filter)
     }
 }

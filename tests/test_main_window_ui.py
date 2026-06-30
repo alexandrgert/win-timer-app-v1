@@ -482,7 +482,7 @@ def test_task_row_second_click_collapses(
     assert deselected == [task.id]
 
 
-def test_pinned_task_not_shown_when_filtered_out(
+def test_pinned_task_collapses_when_switching_view(
     main_window: MainWindow,
     controller: AppController,
     qapp: QApplication,
@@ -496,12 +496,104 @@ def test_pinned_task_not_shown_when_filtered_out(
     main_window._set_view("plan")
     qapp.processEvents()
     assert task.id not in main_window._task_rows
-    assert main_window._pinned_task_row_id == task.id
+    assert main_window._pinned_task_row_id is None
     assert all(not row._pinned for row in main_window._task_rows.values())
 
     main_window._set_view("all")
     qapp.processEvents()
-    assert main_window._task_rows[task.id]._pinned
+    assert not main_window._task_rows[task.id]._pinned
+
+
+def test_pinned_task_collapses_when_switching_to_in_progress(
+    main_window: MainWindow,
+    controller: AppController,
+    qapp: QApplication,
+) -> None:
+    task = controller.create_task("test webdav1", description="")
+    controller.stop_task(task.id)
+    main_window._set_view("all")
+    main_window._on_task_row_selected(task.id)
+    row = main_window._task_rows[task.id]
+    assert row._pinned
+    assert row._actions.parentWidget() is row._pinned_footer
+
+    main_window._set_view("in_progress")
+    qapp.processEvents()
+
+    row = main_window._task_rows[task.id]
+    assert main_window._pinned_task_row_id is None
+    assert not row._pinned
+    assert row._actions.parentWidget() is row._header
+    assert row._desc_wrap.isHidden()
+    assert row.height() == 48
+
+
+def test_task_row_pinned_shows_readonly_meta_on_one_line(
+    qapp: QApplication, controller: AppController
+) -> None:
+    container = QWidget()
+    container.setObjectName("taskListBg")
+    container.setFixedWidth(900)
+    layout = QVBoxLayout(container)
+    task = controller.create_task("Meta task", description="Описание")
+    controller.complete_task(task.id)
+    row = TaskRow(controller, task)
+    layout.addWidget(row)
+    container.show()
+    row.set_pinned(True)
+    qapp.processEvents()
+
+    meta_values = row._meta_box.findChildren(QLabel, "taskRowMetaVal")
+    assert len(meta_values) == 2
+    assert all(not hasattr(label, "editingFinished") for label in meta_values)
+    assert meta_values[0].width() == meta_values[1].width()
+    assert "Создана" in {
+        child.text()
+        for child in row._meta_box.findChildren(QLabel, "taskRowMetaLbl")
+    }
+    assert row._meta_box.parentWidget() is row._stats_row_wrap
+
+
+def test_task_row_pinned_meta_wraps_on_min_list_width(
+    qapp: QApplication, controller: AppController
+) -> None:
+    container = QWidget()
+    container.setObjectName("taskListBg")
+    container.setFixedWidth(TASK_LIST_MIN_WIDTH)
+    layout = QVBoxLayout(container)
+    task = controller.create_task("Meta wrap", description="Описание")
+    controller.complete_task(task.id)
+    row = TaskRow(controller, task)
+    layout.addWidget(row)
+    container.show()
+    row.set_pinned(True)
+    qapp.processEvents()
+
+    assert row._stats_wrap_vertical is True
+    meta_pos = row._meta_box.mapTo(row, row._meta_box.rect().topLeft())
+    times_pos = row._times_box.mapTo(row, row._times_box.rect().topLeft())
+    assert meta_pos.y() < times_pos.y()
+
+
+def test_task_row_pinned_meta_stays_horizontal_when_wide(
+    qapp: QApplication, controller: AppController
+) -> None:
+    container = QWidget()
+    container.setObjectName("taskListBg")
+    container.setFixedWidth(900)
+    layout = QVBoxLayout(container)
+    task = controller.create_task("Meta wide", description="Описание")
+    controller.complete_task(task.id)
+    row = TaskRow(controller, task)
+    layout.addWidget(row)
+    container.show()
+    row.set_pinned(True)
+    qapp.processEvents()
+
+    assert row._stats_wrap_vertical is False
+    meta_pos = row._meta_box.mapTo(row, row._meta_box.rect().topLeft())
+    times_pos = row._times_box.mapTo(row, row._times_box.rect().topLeft())
+    assert meta_pos.y() == times_pos.y()
 
 
 def test_task_row_long_description_wraps_within_row_width(

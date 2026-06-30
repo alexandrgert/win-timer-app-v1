@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
     QCheckBox,
+    QComboBox,
     QCompleter,
     QDateEdit,
     QDateTimeEdit,
@@ -68,7 +69,16 @@ from .app_info import resolve_app_title
 from .controller import AppController, format_day_label, format_duration, format_hm
 from .models import Task, TaskStatus
 from .runtime_info import build_about_report
-from .webdav_config import WebDavConfig, clear_webdav_pending_notice, load_webdav_config
+from .webdav_config import (
+    REMIND_LATER_MINUTES_CHOICES,
+    WebDavConfig,
+    clear_pending_remote_remind,
+    clear_webdav_pending_notice,
+    load_webdav_config,
+    prepare_remote_prompt,
+    save_pending_remote_remind,
+    should_show_remote_prompt,
+)
 from .ui.floating_timer import FloatingTimer
 from .ui.floating_view import FloatingView, resolve_floating_task, resolve_floating_view
 from .ui.task_row import TaskRow
@@ -82,7 +92,15 @@ from .ui.text_layout import (
     fit_wrapped_label_height,
     wrapped_text_height,
 )
-from .webdav_sync import SyncOutcome, pull_and_merge, push_local, save_webdav_settings, test_webdav_connection
+from .webdav_sync import (
+    RemoteCheckOutcome,
+    SyncOutcome,
+    check_remote_changes,
+    pull_and_merge,
+    push_local,
+    save_webdav_settings,
+    test_webdav_connection,
+)
 
 _TRAY_TOOLTIP_FLOATING_AUTO = object()
 TRAY_ACTIVATION_DEBOUNCE_SECONDS = 0.35
@@ -101,7 +119,7 @@ SETTINGS_FIELD_MIN_HEIGHT = 36
 SETTINGS_DIALOG_MIN_WIDTH = 520
 SETTINGS_DIALOG_MIN_HEIGHT = 520
 SETTINGS_DIALOG_DEFAULT_WIDTH = 620
-SETTINGS_DIALOG_DEFAULT_HEIGHT = 800
+SETTINGS_DIALOG_DEFAULT_HEIGHT = 860
 SETTINGS_DIALOG_CHROME_HEIGHT = 132
 SETTINGS_DIALOG_SCREEN_HEIGHT_RATIO = 0.92
 SETTINGS_DIALOG_HORIZONTAL_INSET = 44
@@ -856,6 +874,31 @@ class SettingsDialog(QDialog):
         webdav_layout.addWidget(upload_only_hint)
         _fit_settings_hint_label(upload_only_hint)
 
+        self.webdav_sync_interval_spin = QSpinBox()
+        self.webdav_sync_interval_spin.setRange(0, 1440)
+        self.webdav_sync_interval_spin.setSuffix(" мин")
+        self.webdav_sync_interval_spin.setValue(webdav.sync_interval_minutes)
+        self.webdav_sync_interval_spin.setToolTip(
+            "0 — периодическая проверка выключена. Иначе каждые N минут проверяется сервер; "
+            "при изменениях с другого устройства появится запрос «Скачать и объединить». "
+            "Работает в фоне, в том числе когда окно свёрнуто в трей. "
+            "На Android в фоне минимум 15 минут (ограничение ОС); в открытом приложении — точный интервал."
+        )
+        _configure_settings_form_field(self.webdav_sync_interval_spin)
+        webdav_form.addRow("Синхронизировать каждые", self.webdav_sync_interval_spin)
+
+        self.webdav_remind_later_combo = QComboBox()
+        for minutes in REMIND_LATER_MINUTES_CHOICES:
+            self.webdav_remind_later_combo.addItem(f"{minutes} мин", minutes)
+        remind_index = REMIND_LATER_MINUTES_CHOICES.index(webdav.sync_remind_later_minutes) if webdav.sync_remind_later_minutes in REMIND_LATER_MINUTES_CHOICES else 2
+        self.webdav_remind_later_combo.setCurrentIndex(remind_index)
+        self.webdav_remind_later_combo.setToolTip(
+            "После «Позже» запрос повторится через выбранный интервал для той же версии на сервере. "
+            "При появлении новой версии таймер сбрасывается."
+        )
+        _configure_settings_form_field(self.webdav_remind_later_combo)
+        webdav_form.addRow("Напомнить через (кнопка «Позже»)", self.webdav_remind_later_combo)
+
         self.webdav_test_button = QPushButton("Проверить WebDAV")
         self.webdav_test_button.clicked.connect(self._test_webdav)
         _configure_settings_action_button(self.webdav_test_button)
@@ -1069,12 +1112,16 @@ class SettingsDialog(QDialog):
             sync_on_startup=self.webdav_sync_startup_checkbox.isChecked(),
             sync_on_shutdown=self.webdav_sync_shutdown_checkbox.isChecked(),
             shutdown_upload_only=self.webdav_shutdown_upload_only_checkbox.isChecked(),
+            sync_interval_minutes=self.webdav_sync_interval_spin.value(),
+            sync_remind_later_minutes=int(self.webdav_remind_later_combo.currentData()),
             last_sync_at=current.last_sync_at,
             last_error=current.last_error,
             device_id=current.device_id,
             last_remote_content_hash=current.last_remote_content_hash,
             last_sync_had_conflict=current.last_sync_had_conflict,
             pending_notice=current.pending_notice,
+            pending_remote_hash=current.pending_remote_hash,
+            pending_remote_remind_at=current.pending_remote_remind_at,
         )
 
     @staticmethod
@@ -1832,6 +1879,12 @@ class MainWindow(QMainWindow):
         self.clock_timer.setInterval(1000)
         self.clock_timer.timeout.connect(self._tick)
         self.clock_timer.start()
+        self._webdav_periodic_timer = QTimer(self)
+        self._webdav_periodic_timer.timeout.connect(self._webdav_periodic_sync)
+        self._webdav_main_sync_thread: _CallableThread | None = None
+        self._webdav_check_thread: _CallableThread | None = None
+        self._webdav_remote_prompt_open = False
+        self._configure_webdav_periodic_timer()
         QTimer.singleShot(0, self._run_deferred_startup_sync)
 
     def _run_deferred_startup_sync(self) -> None:
@@ -2138,6 +2191,24 @@ class MainWindow(QMainWindow):
             QSizePolicy.Policy.Fixed,
         )
         sub.addWidget(self.today_total_label)
+
+        webdav_pull_button = QPushButton("↓ Скачать")
+        webdav_pull_button.setObjectName("ghostButton")
+        webdav_pull_button.setFixedHeight(28)
+        webdav_pull_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        webdav_pull_button.setToolTip("Скачать data.json с WebDAV и объединить с локальной базой")
+        webdav_pull_button.clicked.connect(self._webdav_pull_now_main)
+        self._webdav_pull_button = webdav_pull_button
+        sub.addWidget(webdav_pull_button)
+
+        webdav_push_button = QPushButton("↑ Загрузить")
+        webdav_push_button.setObjectName("ghostButton")
+        webdav_push_button.setFixedHeight(28)
+        webdav_push_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        webdav_push_button.setToolTip("Загрузить локальную базу на WebDAV (с предварительным слиянием)")
+        webdav_push_button.clicked.connect(self._webdav_push_now_main)
+        self._webdav_push_button = webdav_push_button
+        sub.addWidget(webdav_push_button)
 
         portal_button = QPushButton("С портала")
         portal_button.setObjectName("ghostButton")
@@ -2553,6 +2624,13 @@ class MainWindow(QMainWindow):
             QLabel#rowTimeVal[live="true"] { color: #27AE60; }
             QLabel#taskRowDesc { color: #828B9A; font-size: 12px; }
             QLabel#taskRowDesc[empty="true"] { color: #B8BDC9; font-style: italic; }
+            QWidget#taskRowMetaBox { background: transparent; }
+            QLabel#taskRowMetaLbl { color: #828B9A; font-size: 11px; }
+            QLabel#taskRowMetaVal {
+                background: #F5F6FA; border: 1px solid #DCDEE3; border-radius: 4px;
+                color: #252835; font-size: 11px; padding: 2px 6px;
+            }
+            QLabel#taskRowMetaVal[empty="true"] { color: #B8BDC9; }
             QWidget#taskRowPinnedFooter { background: transparent; }
 
             QWidget#rowActions { background: transparent; }
@@ -2767,6 +2845,7 @@ class MainWindow(QMainWindow):
             item = self.days_layout.takeAt(0)
             widget = item.widget()
             if widget is not None:
+                widget.setParent(None)
                 widget.deleteLater()
 
         self._task_rows.clear()
@@ -2803,9 +2882,9 @@ class MainWindow(QMainWindow):
                 row.delete_requested.connect(self._confirm_delete_task)
                 row.plan_toggle_requested.connect(self._toggle_plan)
                 self._task_rows[task.id] = row
-                if task.id == self._pinned_task_row_id:
-                    row.set_pinned(True)
                 self.days_layout.addWidget(row)
+            if self._pinned_task_row_id in self._task_rows:
+                self._task_rows[self._pinned_task_row_id].set_pinned(True)
         self.days_layout.addStretch(1)
         self._refresh_task_row_layouts()
         self._refresh_active_panel()
@@ -2926,7 +3005,147 @@ class MainWindow(QMainWindow):
             self.controller.set_bitrix_webhook(dialog.webhook_edit.text())
             self.controller.set_bitrix_portal_config(dialog.portal_config())
             save_webdav_settings(dialog.webdav_config())
+            self._configure_webdav_periodic_timer()
             self.refresh_ui()
+
+    def _configure_webdav_periodic_timer(self) -> None:
+        config = load_webdav_config()
+        if config.enabled and config.sync_interval_minutes > 0 and config.is_configured():
+            self._webdav_periodic_timer.start(config.sync_interval_minutes * 60 * 1000)
+        else:
+            self._webdav_periodic_timer.stop()
+
+    def _webdav_sync_running(self) -> bool:
+        thread = self._webdav_main_sync_thread
+        return thread is not None and thread.isRunning()
+
+    def _set_webdav_buttons_enabled(self, enabled: bool) -> None:
+        if hasattr(self, "_webdav_pull_button"):
+            self._webdav_pull_button.setEnabled(enabled)
+        if hasattr(self, "_webdav_push_button"):
+            self._webdav_push_button.setEnabled(enabled)
+
+    def _webdav_pull_now_main(self) -> None:
+        config = load_webdav_config()
+        if not config.is_configured():
+            QMessageBox.warning(self, "WebDAV", "Укажите URL и имя пользователя в настройках WebDAV.")
+            return
+        if self._webdav_sync_running():
+            return
+        self.controller.save()
+        self._set_webdav_buttons_enabled(False)
+
+        def work() -> SyncOutcome:
+            return pull_and_merge(self.controller.storage, config, require_enabled=False)
+
+        self._webdav_main_sync_thread = _CallableThread(work, self)
+        self._webdav_main_sync_thread.succeeded.connect(self._on_main_webdav_sync_ok)
+        self._webdav_main_sync_thread.failed.connect(self._on_main_webdav_sync_failed)
+        self._webdav_main_sync_thread.finished.connect(
+            lambda: self._set_webdav_buttons_enabled(True)
+        )
+        self._webdav_main_sync_thread.start()
+
+    def _webdav_push_now_main(self) -> None:
+        config = load_webdav_config()
+        if not config.is_configured():
+            QMessageBox.warning(self, "WebDAV", "Укажите URL и имя пользователя в настройках WebDAV.")
+            return
+        if self._webdav_sync_running():
+            return
+        self.controller.save()
+        self._set_webdav_buttons_enabled(False)
+
+        def work() -> SyncOutcome:
+            return push_local(self.controller.storage, config, require_enabled=False)
+
+        self._webdav_main_sync_thread = _CallableThread(work, self)
+        self._webdav_main_sync_thread.succeeded.connect(self._on_main_webdav_sync_ok)
+        self._webdav_main_sync_thread.failed.connect(self._on_main_webdav_sync_failed)
+        self._webdav_main_sync_thread.finished.connect(
+            lambda: self._set_webdav_buttons_enabled(True)
+        )
+        self._webdav_main_sync_thread.start()
+
+    def _webdav_periodic_sync(self) -> None:
+        config = load_webdav_config()
+        if not config.enabled or config.sync_interval_minutes <= 0 or not config.is_configured():
+            self._webdav_periodic_timer.stop()
+            return
+        if self._webdav_sync_running() or self._webdav_remote_prompt_open:
+            return
+        check_thread = self._webdav_check_thread
+        if check_thread is not None and check_thread.isRunning():
+            return
+
+        def work() -> RemoteCheckOutcome:
+            return check_remote_changes(self.controller.storage, config, require_enabled=True)
+
+        self._webdav_check_thread = _CallableThread(work, self)
+        self._webdav_check_thread.succeeded.connect(self._on_webdav_remote_check_ok)
+        self._webdav_check_thread.start()
+
+    def _on_webdav_remote_check_ok(self, outcome: object) -> None:
+        check = outcome if isinstance(outcome, RemoteCheckOutcome) else RemoteCheckOutcome()
+        if check.error or not check.remote_changed:
+            return
+        config = load_webdav_config()
+        if not should_show_remote_prompt(config, check.remote_hash):
+            return
+        if self._webdav_remote_prompt_open or self._webdav_sync_running():
+            return
+        config = prepare_remote_prompt(config, check.remote_hash)
+        if self._tray_collapsed or not self.isVisible():
+            self._restore_from_tray()
+        self._webdav_remote_prompt_open = True
+        answer = QMessageBox.question(
+            self,
+            "WebDAV",
+            "На сервере обнаружены изменения с другого устройства. "
+            "Скачать и объединить с локальной базой?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        self._webdav_remote_prompt_open = False
+        if answer == QMessageBox.StandardButton.Yes:
+            clear_pending_remote_remind(config)
+            self._webdav_pull_after_remote_check()
+        else:
+            save_pending_remote_remind(config, check.remote_hash)
+
+    def _webdav_pull_after_remote_check(self) -> None:
+        config = load_webdav_config()
+        if not config.is_configured() or self._webdav_sync_running():
+            return
+        self.controller.save()
+        self._set_webdav_buttons_enabled(False)
+
+        def work() -> SyncOutcome:
+            return pull_and_merge(self.controller.storage, config, require_enabled=False)
+
+        self._webdav_main_sync_thread = _CallableThread(work, self)
+        self._webdav_main_sync_thread.succeeded.connect(self._on_main_webdav_sync_ok)
+        self._webdav_main_sync_thread.failed.connect(self._on_main_webdav_sync_failed)
+        self._webdav_main_sync_thread.finished.connect(
+            lambda: self._set_webdav_buttons_enabled(True)
+        )
+        self._webdav_main_sync_thread.start()
+
+    def _on_main_webdav_sync_ok(self, outcome: object) -> None:
+        sync_outcome = outcome if isinstance(outcome, SyncOutcome) else SyncOutcome()
+        if sync_outcome.state is not None:
+            self.controller.state = sync_outcome.state
+            self.controller.apply_loaded_state()
+        else:
+            self.controller.reload_state_from_storage()
+        self.refresh_ui()
+        if sync_outcome.error:
+            QMessageBox.warning(self, "WebDAV", sync_outcome.error)
+        elif sync_outcome.notice:
+            self.controller.webdav_startup_notice = f"WebDAV: {sync_outcome.notice}"
+
+    def _on_main_webdav_sync_failed(self, message: object) -> None:
+        QMessageBox.warning(self, "WebDAV", str(message))
 
     def _merge_legacy_bases(self) -> None:
         from .legacy_merge_ui import offer_legacy_merge_manual
@@ -2984,11 +3203,13 @@ class MainWindow(QMainWindow):
 
     def _set_view(self, view: str) -> None:
         self._current_view = view
+        self._pinned_task_row_id = None
         self.refresh_ui()
 
     def _set_date(self, qdate: QDate) -> None:
         self._selected_date = qdate.toString("yyyy-MM-dd")
         self._current_view = "date"
+        self._pinned_task_row_id = None
         self.refresh_ui()
 
     def _toggle_plan(self, task_id: str) -> None:

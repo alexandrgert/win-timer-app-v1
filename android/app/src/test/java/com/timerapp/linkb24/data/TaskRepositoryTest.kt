@@ -98,4 +98,24 @@ class TaskRepositoryTest {
         val instant = parseInstant("2026-06-15T10:00:00+03:00")
         assertNotNull(instant)
     }
+
+    @Test
+    fun resumeCompletedTask_reopens_and_starts_timer() {
+        val dir = tempDir()
+        val repository = TaskRepository(File(dir, "data.json"))
+        val created = repository.createTask("Done", AppDataDto())
+        val completed = repository.completeTask(created.tasks.single().id, created)
+        val task = completed.tasks.single()
+
+        assertEquals(TaskStatus.COMPLETED, task.status)
+        assertNotNull(task.completedAt)
+
+        val resumed = repository.resumeCompletedTask(task.id, completed)
+        val reopened = resumed.tasks.single()
+
+        assertEquals(TaskStatus.RUNNING, reopened.status)
+        assertNull(reopened.completedAt)
+        assertEquals(1, reopened.sessions.size)
+        assertNull(reopened.sessions.single().endedAt)
+    }
 }

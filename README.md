@@ -8,17 +8,18 @@
 
 ## Возможности
 
-- Три вида списка: **план на сегодня**, **в работе**, **все задачи**; фильтр по дате учёта времени.
+- Три вида списка: **план на сегодня**, **в работе**, **все задачи**; фильтр по дате учёта времени; в развёрнутой карточке — **даты «Создана» / «Завершена»** (read-only).
 - Таймер по задачам, история интервалов, напоминание «продолжать?», **режим концентрации** (обратный отсчёт в правой колонке).
 - Системный трей и плавающий виджет активной или приостановленной задачи (скрывается после завершения); щелчок по иконке в трее показывает или скрывает главное окно.
 - **Объединение баз** от старых версий — по запросу при обновлении или из меню «Настройки».
 - **Битрикс24**: импорт проектов/задач, «Открыть в Б24», создание задачи с привязкой к компании, автозавершение на портале, **передача затраченного времени** из истории сессий.
-- **WebDAV**: синхронизация `data.json` между компьютерами; настройки в UI или `.env`.
+- **WebDAV**: синхронизация `data.json` между **компьютерами и Android**; отдельные кнопки «Скачать и объединить» / «Загрузить сейчас»; периодическая проверка сервера с запросом «Скачать и объединить?» / «Позже»; настройки в UI.
+- **Android** (Kotlin / Compose): те же задачи и WebDAV, фильтры Сегодня / В работе / Все, возобновление завершённых задач.
 - Настройки СПА «Реестр проектов» — в UI (**Определить с портала**) или в `ui.bitrix.portal` в `data.json`.
 
 Спецификация модели «план на день»: [`docs/superpowers/specs/2026-06-11-task-views-and-plan-design.md`](docs/superpowers/specs/2026-06-11-task-views-and-plan-design.md).
 
-Документация: [архитектура](docs/architecture-cross-platform.md) · [схема данных](docs/data-schema.md) · [WebDAV (техн.)](docs/webdav-sync.md) · [системные требования](docs/system-requirements.md) · [релиз 0.5.23](docs/release-notes-v0.5.23.md)
+Документация: [архитектура](docs/architecture-cross-platform.md) · [схема данных](docs/data-schema.md) · [WebDAV (техн.)](docs/webdav-sync.md) · [системные требования](docs/system-requirements.md) · [релиз 0.5.31](docs/release-notes-v0.5.31.md)
 
 ## Быстрый старт
 
@@ -90,11 +91,17 @@ pytest
 ./build_apk.sh
 ```
 
+Перед сборкой APK сверьте `versionName` / `versionCode` в `android/app/build.gradle.kts` с `pyproject.toml`:
+
+```bash
+python scripts/check_version_sync.py
+```
+
 Результат: `dist/tasktimer-link-b24-<версия>-android.apk`. См. [системные требования](docs/system-requirements.md).
 
 ### CI
 
-При push в `main` GitHub Actions собирает **`.deb`**, **`.exe`** и **macOS `.zip`** (артефакты в workflow run).
+При push в `main` GitHub Actions собирает **`.deb`**, **`.exe`**, **macOS `.zip`** и **`.apk`** (артефакты в workflow run).
 
 Ручной bump без сборки: `python scripts/bump_version.py minor`
 
@@ -103,20 +110,21 @@ pytest
 Готовые сборки — [GitHub Releases](https://github.com/alexandrgert/timer-app/releases).
 **Системные требования:** [`docs/system-requirements.md`](docs/system-requirements.md).
 
-**Последний релиз:** [v0.5.23](https://github.com/alexandrgert/timer-app/releases/tag/v0.5.23) — [текст для пользователей](docs/release-notes-v0.5.23.md)
+**Последний релиз:** [v0.5.31](https://github.com/alexandrgert/timer-app/releases/tag/v0.5.31) — [текст для пользователей](docs/release-notes-v0.5.31.md)  
+*(локально собраны `dist/*.deb` и `dist/*.apk`; exe/zip — при публикации через CI или сборку на Windows/macOS)*
 
 | Платформа | Файл |
 |-----------|------|
-| Linux amd64 | `tasktimer-link-b24-0.5.23-amd64.deb` |
-| Windows x64 | `tasktimer-link-b24-0.5.23-win64.exe` |
-| macOS arm64 | `tasktimer-link-b24-0.5.23-macos-arm64.zip` |
-| Android | `tasktimer-link-b24-0.5.23-android.apk` |
+| Linux amd64 | `tasktimer-link-b24-0.5.31-amd64.deb` |
+| Windows x64 | `tasktimer-link-b24-0.5.31-win64.exe` |
+| macOS arm64 | `tasktimer-link-b24-0.5.31-macos-arm64.zip` |
+| Android | `tasktimer-link-b24-0.5.31-android.apk` |
 
 Linux:
 
 ```bash
-wget https://github.com/alexandrgert/timer-app/releases/download/v0.5.23/tasktimer-link-b24-0.5.23-amd64.deb
-sudo dpkg -i tasktimer-link-b24-0.5.23-amd64.deb
+wget https://github.com/alexandrgert/timer-app/releases/download/v0.5.31/tasktimer-link-b24-0.5.31-amd64.deb
+sudo dpkg -i tasktimer-link-b24-0.5.31-amd64.deb
 sudo apt-get install -f
 tasktimer-link-b24
 ```
@@ -138,6 +146,7 @@ build_deb.sh           # сборка .deb (Linux amd64)
 build_exe.ps1          # сборка .exe (Windows x64)
 build_macos.sh         # сборка .app zip (macOS)
 build_apk.sh           # сборка .apk (Android)
+android/               # Kotlin / Compose, WebDAV, общая схема data.json
 src/timerapp_ag/
   main.py              # точка входа
   controller.py        # бизнес-логика
@@ -149,6 +158,7 @@ src/timerapp_ag/
   platform_paths.py    # пути данных и конфигурации
   webdav_*.py          # синхронизация с облаком
   bitrix*.py           # Битрикс24
+scripts/               # bump_version, check_version_sync
 tests/
 docs/                  # архитектура, WebDAV, release notes
 ```
@@ -185,7 +195,7 @@ docs/                  # архитектура, WebDAV, release notes
 |--|--|--|
 | Пакет | `win_timer_app` | `timerapp_ag` |
 | Bitrix24 | базовая интеграция | WebDAV-sync секретов, настройки СПА в UI, расширенный single-instance |
-| Linux / Android | нет | `.deb` amd64, APK |
+| Linux / Android | нет | `.deb` amd64, **APK** (Compose, WebDAV) |
 | WebDAV | нет | синхронизация `data.json` |
 | Legacy merge | нет | объединение баз старых версий |
 | Название продукта | TaskTimer | TaskTimer link B24 |

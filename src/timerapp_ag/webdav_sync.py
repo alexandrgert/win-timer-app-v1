@@ -32,6 +32,13 @@ class SyncOutcome:
     notice: str = ""
 
 
+@dataclass
+class RemoteCheckOutcome:
+    remote_changed: bool = False
+    remote_hash: str = ""
+    error: str = ""
+
+
 def _read_remote_meta(client: WebDavClient, config: WebDavConfig) -> RemoteSyncMeta | None:
     meta_url = config.meta_remote_url()
     if not client.exists(meta_url):
@@ -234,6 +241,30 @@ def push_local(
     return SyncOutcome(state=merged, conflict_detected=conflict_detected, notice=notice)
 
 
+def push_merged_state(
+    storage: Storage,
+    config: WebDavConfig | None = None,
+    *,
+    require_enabled: bool = True,
+) -> SyncOutcome:
+    """Загрузить текущий локальный data.json без повторного скачивания с сервера."""
+    config = config or load_webdav_config()
+    if require_enabled and not config.enabled:
+        raise WebDavError("Синхронизация WebDAV отключена")
+    if not storage.path.is_file():
+        raise WebDavError("Локальный файл данных не найден")
+
+    merged = AppState.from_dict(json.loads(storage.path.read_text(encoding="utf-8")))
+    normalize_running_tasks(merged)
+    storage.save(merged, update_rolling_backup=False)
+
+    payload = storage.path.read_bytes()
+    client = WebDavClient(config)
+    meta = _upload_payload(client, config, payload)
+    mark_webdav_sync_ok(config, remote_hash=meta.content_hash, had_conflict=False)
+    return SyncOutcome(state=merged)
+
+
 def push_local_upload_only(
     storage: Storage,
     config: WebDavConfig | None = None,
@@ -322,3 +353,65 @@ def sync_webdav_on_startup(storage: Storage) -> SyncOutcome:
 
 def save_webdav_settings(config: WebDavConfig) -> None:
     save_webdav_config(config)
+
+
+def sync_webdav_now(
+    storage: Storage,
+    config: WebDavConfig | None = None,
+    *,
+    require_enabled: bool = False,
+) -> SyncOutcome:
+    """Скачать, объединить и загрузить обратно (ручная / периодическая синхронизация)."""
+    config = config or load_webdav_config()
+    if require_enabled and not config.enabled:
+        return SyncOutcome(error="Синхронизация WebDAV отключена")
+    if not config.is_configured():
+        return SyncOutcome(error="WebDAV не настроен: укажите URL и имя пользователя")
+    try:
+        pull_outcome = pull_and_merge(storage, config, require_enabled=False)
+        push_outcome = push_merged_state(storage, config, require_enabled=False)
+        notices = [part for part in (pull_outcome.notice, push_outcome.notice) if part]
+        notice = " ".join(notices) if notices else "Синхронизация завершена"
+        return SyncOutcome(
+            state=push_outcome.state or pull_outcome.state,
+            conflict_detected=pull_outcome.conflict_detected or push_outcome.conflict_detected,
+            notice=notice,
+        )
+    except WebDavError as exc:
+        logger.error("WebDAV sync now failed: %s", exc)
+        mark_webdav_sync_error(config, str(exc))
+        return SyncOutcome(error=str(exc))
+
+
+def check_remote_changes(
+    storage: Storage,
+    config: WebDavConfig | None = None,
+    *,
+    require_enabled: bool = True,
+) -> RemoteCheckOutcome:
+    """Проверить, изменился ли удалённый data.json с момента последней синхронизации."""
+    config = config or load_webdav_config()
+    if require_enabled and not config.enabled:
+        return RemoteCheckOutcome()
+    if not config.is_configured():
+        return RemoteCheckOutcome(error="WebDAV не настроен: укажите URL и имя пользователя")
+    try:
+        client = WebDavClient(config)
+        if not client.exists():
+            return RemoteCheckOutcome()
+        remote_payload = client.download()
+        remote_meta = _read_remote_meta(client, config)
+        remote_hash = _remote_payload_hash(remote_payload, remote_meta)
+        local_hash = content_hash(storage.path.read_bytes()) if storage.path.is_file() else ""
+        changed = _remote_changed_since_sync(config, remote_hash, local_hash)
+        return RemoteCheckOutcome(remote_changed=changed, remote_hash=remote_hash)
+    except WebDavError as exc:
+        logger.warning("WebDAV remote check failed: %s", exc)
+        return RemoteCheckOutcome(error=str(exc))
+
+
+def sync_webdav_periodic(storage: Storage) -> RemoteCheckOutcome:
+    config = load_webdav_config()
+    if not config.enabled or config.sync_interval_minutes <= 0:
+        return RemoteCheckOutcome()
+    return check_remote_changes(storage, config, require_enabled=True)
