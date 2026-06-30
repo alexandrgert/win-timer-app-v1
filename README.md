@@ -110,14 +110,13 @@ python scripts/check_version_sync.py
 Готовые сборки — [GitHub Releases](https://github.com/alexandrgert/timer-app/releases).
 **Системные требования:** [`docs/system-requirements.md`](docs/system-requirements.md).
 
-**Последний релиз:** [v0.5.31](https://github.com/alexandrgert/timer-app/releases/tag/v0.5.31) — [текст для пользователей](docs/release-notes-v0.5.31.md)  
-*(локально собраны `dist/*.deb` и `dist/*.apk`; exe/zip — при публикации через CI или сборку на Windows/macOS)*
+**Последний релиз:** [v0.5.31](https://github.com/alexandrgert/timer-app/releases/tag/v0.5.31) — [текст для пользователей](docs/release-notes-v0.5.31.md)
 
 | Платформа | Файл |
 |-----------|------|
 | Linux amd64 | `tasktimer-link-b24-0.5.31-amd64.deb` |
 | Windows x64 | `tasktimer-link-b24-0.5.31-win64.exe` |
-| macOS arm64 | `tasktimer-link-b24-0.5.31-macos-arm64.zip` |
+| macOS arm64 | `tasktimer-link-b24-0.5.31-macos-arm64.zip` *(Apple Silicon)* |
 | Android | `tasktimer-link-b24-0.5.31-android.apk` |
 
 Linux:

@@ -12,7 +12,7 @@
 |-----------|----------|-----|-----------|-----|------|------|
 | **Linux** | `.deb` amd64 | Debian 11+, Ubuntu 20.04+, Mint, Astra и др. с **glibc ≥ 2.31** | x86_64 (64-bit) | 512 МБ | ~200 МБ | для Битрикс24 / WebDAV |
 | **Windows** | `.exe` win64 | Windows **10** (64-bit) или **11** | x86_64 (AMD64) | 512 МБ | ~150 МБ | для Битрикс24 / WebDAV |
-| **macOS** | `.app` в `.zip` | **macOS 11** Big Sur и новее | Intel **или** Apple Silicon (arm64) | 512 МБ | ~200 МБ | для Битрикс24 / WebDAV |
+| **macOS** | `.app` в `.zip` | **macOS 11** Big Sur и новее | Apple Silicon (**arm64**) в релизе; Intel — отдельная сборка | 512 МБ | ~200 МБ | для Битрикс24 / WebDAV |
 | **Android** | `.apk` | **Android 10** (API 29) и новее | arm64-v8a, armeabi-v7a | 512 МБ | ~50 МБ | для WebDAV; Битрикс24 — в планах |
 
 **Не поддерживается:** 32-bit Linux/Windows, iOS (в планах), Flatpak/AppImage.
@@ -80,7 +80,7 @@
 | Параметр | Требование |
 |----------|------------|
 | ОС | **macOS 11** Big Sur и новее |
-| Процессор | Intel (x86_64) **или** Apple Silicon (arm64) — скачивайте сборку под свою архитектуру |
+| Процессор | Apple Silicon (**arm64**) — [релиз v0.5.31](https://github.com/alexandrgert/timer-app/releases/tag/v0.5.31); Intel (x86_64) — отдельная сборка `./build_macos.sh` на Mac |
 | ОЗУ | 512 МБ (рекомендуется 1 ГБ+) |
 | Диск | ~200 МБ; данные в `~/Library/Application Support/timerapp/` |
 
@@ -160,7 +160,7 @@ Release APK подписан **debug-ключом** — для публикац�
 | `tasktimer-link-b24-*-macos-arm64.zip` / `*-macos-x86_64.zip` | macOS |
 | `tasktimer-link-b24-*-android.apk` | Android |
 
-**Текущий релиз:** [v0.5.31](https://github.com/alexandrgert/timer-app/releases/tag/v0.5.31) *(локально собраны deb/apk; exe/zip — при публикации через CI или сборку на Windows/macOS)*.
+**Текущий релиз:** [v0.5.31](https://github.com/alexandrgert/timer-app/releases/tag/v0.5.31) — Linux, Windows, macOS (arm64), Android.
 
 CI (`.github/workflows/ci.yml`) при push в `main` собирает **Linux .deb**, **Windows .exe**, **macOS .zip** и **Android .apk**.
 
