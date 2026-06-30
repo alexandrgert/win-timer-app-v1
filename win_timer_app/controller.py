@@ -382,8 +382,15 @@ class AppController:
                 return task
         return None
 
+    def running_tasks(self) -> list[Task]:
+        return [
+            task
+            for task in self.state.tasks
+            if task.status == TaskStatus.RUNNING and task.active_session()
+        ]
+
     def timer_panel_task(self) -> Task | None:
-        """Side timer: running task, or the most recently paused one with sessions."""
+        """Running task, or the most recently paused one with sessions."""
         running = self.active_task()
         if running is not None:
             return running

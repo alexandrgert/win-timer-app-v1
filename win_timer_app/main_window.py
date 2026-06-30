@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Callable
 
 from PySide6.QtCore import (
     QDate,
@@ -60,16 +61,68 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .app_info import APP_TITLE
+from .app_info import APP_TITLE, resolve_app_title
 from .bitrix import Bitrix24Client, entity_url, looks_like_webhook
 from .controller import AppController, format_day_label, format_duration, format_hm
 from .models import Task, TaskStatus
 from .runtime_info import build_about_report
 
-WINDOW_MIN_HEIGHT = 680
-WINDOW_VERTICAL_CHROME = 40
-FOCUS_PRESET_BUTTON_HEIGHT = 36
-FOCUS_PRESET_ROW_SPACING = 5
+_TRAY_TOOLTIP_FLOATING_AUTO = object()
+
+
+def format_tray_tooltip(
+    *,
+    window_visible: bool,
+    app_title: str,
+    task_titles: list[str],
+) -> str:
+    """Tray hover text: app name when the window is open, one line per task when hidden."""
+    if window_visible:
+        return app_title
+    if task_titles:
+        return "\n".join(task_titles)
+    return "Нет активных таймеров"
+
+
+def tray_tooltip_task_titles(
+    *,
+    running_task_titles: list[str],
+    floating_task: Task | None,
+) -> list[str]:
+    """Running tasks plus paused mini-widget task (without duplicates)."""
+    titles = list(running_task_titles)
+    if floating_task is not None and floating_task.title not in titles:
+        titles.append(floating_task.title)
+    return titles
+
+
+def resolve_floating_task(
+    *,
+    active: Task | None,
+    tracked_task_id: str | None,
+    find_task: Callable[[str], Task],
+    panel_task: Task | None = None,
+) -> tuple[Task | None, str | None]:
+    """Running/paused task for mini-widget and tray tooltip (active → tracked → panel)."""
+    if active is not None:
+        return active, active.id
+    if tracked_task_id is not None:
+        try:
+            task = find_task(tracked_task_id)
+        except KeyError:
+            task = None
+        else:
+            if task.status == TaskStatus.COMPLETED:
+                pass
+            elif task.status in (TaskStatus.RUNNING, TaskStatus.PAUSED):
+                return task, tracked_task_id
+    if panel_task is not None and panel_task.status in (TaskStatus.RUNNING, TaskStatus.PAUSED):
+        return panel_task, panel_task.id
+    return None, None
+
+
+def main_window_is_open(*, is_visible: bool, is_minimized: bool) -> bool:
+    return is_visible and not is_minimized
 
 
 class CreateTaskCard(QFrame):
@@ -1952,6 +2005,7 @@ class MainWindow(QMainWindow):
         self.tray.setContextMenu(tray_menu)
         self.tray.activated.connect(self._handle_tray_activation)
         self.tray.show()
+        self._update_tray_tooltip()
 
     def _apply_styles(self) -> None:
         qss = """
@@ -2288,7 +2342,7 @@ class MainWindow(QMainWindow):
                 self.days_layout.addWidget(row)
         self.days_layout.addStretch(1)
         self._refresh_active_panel()
-        self._refresh_focus_panel()
+        self._update_tray_tooltip()
 
     def _empty_hint(self) -> str:
         if self._current_view == "plan":
@@ -2596,6 +2650,7 @@ class MainWindow(QMainWindow):
                 6000,
             )
         self._update_floating()
+        self._update_tray_tooltip()
         if focus_status == "finished":
             paused_task_id = self.controller.focus_paused_task_id
             QApplication.beep()
@@ -2652,11 +2707,50 @@ class MainWindow(QMainWindow):
         if self.tray_available and self.tray.isVisible():
             self.tray.showMessage(title, text, icon, timeout)
 
+    def _update_tray_tooltip(
+        self,
+        floating_task: Task | None | object = _TRAY_TOOLTIP_FLOATING_AUTO,
+    ) -> None:
+        if not self.tray_available:
+            return
+        window_open = main_window_is_open(
+            is_visible=self.isVisible(),
+            is_minimized=self.isMinimized(),
+        )
+        running_titles = [task.title for task in self.controller.running_tasks()]
+        display_task: Task | None = None
+        if not window_open:
+            if floating_task is _TRAY_TOOLTIP_FLOATING_AUTO:
+                display_task, tracked_id = self._floating_task_state()
+                self._mini_task_id = tracked_id
+            else:
+                display_task = floating_task  # type: ignore[assignment]
+        task_titles = tray_tooltip_task_titles(
+            running_task_titles=running_titles,
+            floating_task=display_task,
+        )
+        self.tray.setToolTip(
+            format_tray_tooltip(
+                window_visible=window_open,
+                app_title=resolve_app_title(),
+                task_titles=task_titles,
+            )
+        )
+
+    def _floating_task_state(self) -> tuple[Task | None, str | None]:
+        return resolve_floating_task(
+            active=self.controller.active_task(),
+            tracked_task_id=self._mini_task_id,
+            find_task=self.controller.find_task,
+            panel_task=self.controller.timer_panel_task(),
+        )
+
     def _hide_to_tray(self) -> None:
         if not self.tray_available or not self.tray.isVisible():
             return
         self.hide()
         self._show_floating()
+        self._update_tray_tooltip()
         self._show_tray_message(
             "Приложение свернуто",
             "Таймер продолжает работать в системном трее.",
@@ -2665,11 +2759,10 @@ class MainWindow(QMainWindow):
         )
 
     def _show_floating(self) -> None:
-        active = self.controller.active_task()
-        if active is not None:
-            self._mini_task_id = active.id
-        if self._mini_task_id is None:
+        task, tracked_id = self._floating_task_state()
+        if task is None or tracked_id is None:
             return
+        self._mini_task_id = tracked_id
         try:
             self.controller.find_task(self._mini_task_id)
         except KeyError:
@@ -2711,6 +2804,7 @@ class MainWindow(QMainWindow):
     def _floating_close(self) -> None:
         """Hide the floating widget; the timer keeps running in the background."""
         self.floating.hide()
+        self._update_tray_tooltip()
         self._show_tray_message(
             "Виджет скрыт",
             "Таймер продолжает работать. Откройте приложение или «Показать виджет» из трея.",
@@ -2765,6 +2859,7 @@ class MainWindow(QMainWindow):
         self.showNormal()
         self.raise_()
         self.activateWindow()
+        self._update_tray_tooltip()
 
     def _handle_tray_activation(self, reason: QSystemTrayIcon.ActivationReason) -> None:
         if reason == QSystemTrayIcon.ActivationReason.Trigger:
